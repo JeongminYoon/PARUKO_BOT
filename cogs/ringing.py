@@ -11,6 +11,8 @@ from mutagen.mp3 import MP3
 message_success = "ding-dong"
 message_fail = "You IDIOT!"
 
+ringing_path = "./mp3/ringing/*.mp3"
+ffmpeg_path = "./ffmpeg/bin/ffmpeg"
 
 ###########################################
 ###########################################
@@ -43,16 +45,16 @@ class ringing(commands.Cog):
     async def ringing(self, ctx, channel: discord.VoiceChannel):
         await ctx.message.delete()
         rng = random.randint(0,100)
-        path = "./mp3/*.mp3"
-        link = glob.glob(path)
+        
+        link = glob.glob(ringing_path)
         audio = MP3(link[0])
         
-        ffmpeg_location = "./ffmpeg/bin/ffmpeg"
+        
 
         
         
         
-        player = discord.FFmpegPCMAudio(executable=ffmpeg_location, source=link[0])
+        player = discord.FFmpegPCMAudio(executable=ffmpeg_path, source=link[0])
 
         # failed
         if rng in range(1,31): # 30%
