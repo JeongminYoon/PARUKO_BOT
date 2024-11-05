@@ -11,8 +11,9 @@ from mutagen.mp3 import MP3
 message_success = "ding-dong"
 message_fail = "You IDIOT!"
 
-ringing_path = "./mp3/ringing/*.mp3"
 ffmpeg_path = "./ffmpeg/bin/ffmpeg"
+ringing_path = "./mp3/ringing/*.mp3"
+
 
 ###########################################
 ###########################################
