@@ -25,7 +25,7 @@ ffmpeg_location = "./ffmpeg/bin/ffmpeg"
 
 entry_path = "./mp3/entry/*.mp3"
 
-url_quick = ["https://youtu.be/ttVUZOkTxuM?si=fxizUn_G7tTvaN_-", "https://youtu.be/kHGJkDqS2Ek?si=trSzzEpyRV5fTkOl", "https://youtu.be/i8OUh3YvRpk?si=kENGCpCK_39EgHAy"]
+url_quick = ["https://youtu.be/szxn42peP3M?si=vjBHCOHasX4O4BrA", "https://youtu.be/pNBB8DnoanU?si=3fYVi0NnXEGSYKnd", "https://youtu.be/_LPRluTeSxw?si=Dw1_e9nxeuuJvDG9"]
 
 entry = 1  # 입장음 활성화
 ###########################################
