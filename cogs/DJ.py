@@ -144,7 +144,7 @@ class DJ(commands.Cog):
         try:
             for i in range(0, len(self.bot.voice_clients)):
                 if self.bot.voice_clients[i].is_connected() is True and len(self.bot.voice_clients[i].channel.members) == 1:
-                    await self.server[i].channel.send("*Never left without saying goodbye...*")
+                    await self.server[i].channel.send("*기숙사로 돌아갑니다다...*")
                     await leave(self, i)
                         
         except:
