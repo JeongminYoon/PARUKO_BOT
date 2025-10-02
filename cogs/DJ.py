@@ -17,8 +17,8 @@ from mutagen.mp3 import MP3
 ################# Setup ###################
 ###########################################
 ffmpeg_options = {
-            'options': '-vn',
-            "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5"
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn'
         }
 
 ffmpeg_location = "./ffmpeg/bin/ffmpeg" 
@@ -27,7 +27,7 @@ entry_path = "./mp3/entry/*.mp3"
 
 url_quick = ["https://youtu.be/ttVUZOkTxuM?si=fxizUn_G7tTvaN_-", "https://youtu.be/kHGJkDqS2Ek?si=trSzzEpyRV5fTkOl", "https://youtu.be/i8OUh3YvRpk?si=kENGCpCK_39EgHAy"]
 
-entry = 1
+entry = 1  # 입장음 활성화
 ###########################################
 ###########################################
         
@@ -43,13 +43,13 @@ async def leave(self, num):
     await self.bot.voice_clients[num].disconnect()
 
 def server_check(self, channel: discord.VoiceChannel):
-    server_num = None
-    for server_num in range(0, len(self.bot.voice_clients)):
-        if channel == self.bot.voice_clients[server_num].channel:
-            break
-        else:
-            server_num = None
-    return server_num
+    for server_num in range(len(self.bot.voice_clients)):
+        try:
+            if self.bot.voice_clients[server_num].channel == channel:
+                return server_num
+        except (IndexError, AttributeError):
+            continue
+    return None
 
 ###########################################
 ###########################################
@@ -111,10 +111,23 @@ class DJ(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         option = {
-                'format':'bestaudio/best', 
-                'noplaylist':True,
-                'skip_download':True, 
-                'extractor_args': {'youtube': {'player_client': ['web']}}
+                'format': 'bestaudio/best', 
+                'noplaylist': True,
+                'skip_download': True,
+                'extract_flat': False,
+                'no_warnings': True,
+                'default_search': 'auto',
+                'source_address': '0.0.0.0',
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                },
+                'extractor_args': {
+                    'youtube': {
+                        'player_client': ['android', 'tv_embedded', 'web'],
+                        'skip': ['dash', 'hls'],
+                        'lang': ['ko', 'en']
+                    }
+                }
                 }
         self.DL = YoutubeDL(option)
         self.server = []
@@ -188,24 +201,45 @@ class DJ(commands.Cog):
         
 
 
-        try:
-            await channel.connect()
-            server_num = server_check(self, channel)
-            self.server.append(server_0)
-            self.server[server_num].channel_set(ctx.channel)
+        # 봇이 이미 연결되어 있는지 확인
+        server_num = server_check(self, channel)
+        print(f"Initial server check: {server_num}")
+        
+        if server_num is None:
+            # 연결되지 않았으면 연결 시도
+            try:
+                print(f"Attempting to connect to channel: {channel.name}")
+                await channel.connect()
+                print(f"Connected to channel: {channel.name}")
+                # 연결 후 잠시 대기
+                await asyncio.sleep(0.5)
+                # 가장 최근에 연결된 클라이언트 사용
+                server_num = len(self.bot.voice_clients) - 1
+                print(f"Server number: {server_num}")
+                self.server.append(server_0)
+                self.server[server_num].channel_set(ctx.channel)
 
-            #입장음
-            if entry == 1:
-                entry_link = glob.glob(entry_path)
-                entry_audio = MP3(entry_link[0])
-                entry_player = discord.FFmpegPCMAudio(executable=ffmpeg_location, source=entry_link[0])
-                ctx.voice_client.play(entry_player)
-                await asyncio.sleep(entry_audio.info.length)
-            else:
-                pass
-    
-        except:
-            server_num = server_check(self, channel)
+                #입장음 (임시 비활성화)
+                if entry == 1:
+                    try:
+                        entry_link = glob.glob(entry_path)
+                        if entry_link and len(entry_link) > 0:
+                            entry_audio = MP3(entry_link[0])
+                            entry_player = discord.FFmpegPCMAudio(executable=ffmpeg_location, source=entry_link[0])
+                            ctx.voice_client.play(entry_player)
+                            await asyncio.sleep(entry_audio.info.length)
+                    except Exception as e:
+                        print(f"Entry sound error: {e}")
+                        # 입장음 오류 시 무시하고 계속 진행
+                else:
+                    pass
+            except Exception as e:
+                print(f"Connection error: {e}")
+                await ctx.reply("Failed to connect to voice channel")
+                return
+        else:
+            # 이미 연결되어 있으면 기존 연결 사용
+            print(f"Using existing connection, server_num: {server_num}")
 
             
             
@@ -238,7 +272,7 @@ class DJ(commands.Cog):
             q_num = len(queue_list) - 1
             
 
-            embed=discord.Embed(title='Queued', description=f'[{queue_list[q_num]["title"]}]({queue_list[q_num]["url"]})', color=discord.Color.from_rgb(255, 0, 0))
+            embed=discord.Embed(title='레이스 대기열에 추가됨', description=f'[{queue_list[q_num]["title"]}]({queue_list[q_num]["url"]})', color=discord.Color.from_rgb(255, 215, 0))
             embed.add_field(name='Position', value=f'{q_num}')
             embed.add_field(name='Duration', value=f'{queue_list[q_num]["duration"]}', inline=True)
             embed.add_field(name='Requested by', value=f'{queue_list[q_num]["author"]}', inline=True)
@@ -254,7 +288,7 @@ class DJ(commands.Cog):
             q_num = insert_num
             
 
-            embed=discord.Embed(title='Queued', description=f'[{queue_list[q_num]["title"]}]({queue_list[q_num]["url"]})', color=discord.Color.from_rgb(255, 0, 0))
+            embed=discord.Embed(title='레이스 대기열에 추가됨', description=f'[{queue_list[q_num]["title"]}]({queue_list[q_num]["url"]})', color=discord.Color.from_rgb(255, 215, 0))
             embed.add_field(name='Position', value=f'{q_num}')
             embed.add_field(name='Duration', value=f'{queue_list[q_num]["duration"]}', inline=True)
             embed.add_field(name='Requested by', value=f'{queue_list[q_num]["author"]}', inline=True)
@@ -278,10 +312,14 @@ class DJ(commands.Cog):
         self.server[server_num].np_time = time.time()
 
 
-        embed=discord.Embed(title='Play', description=f'[{title}]({o_url})', color=discord.Color.from_rgb(255, 0, 0))
+        embed=discord.Embed(title='레이스 시작!', description=f'[{title}]({o_url})', color=discord.Color.from_rgb(0, 100, 200))
         embed.add_field(name='Duration', value=f'{o_duration}', inline=True)
         embed.add_field(name='Requested by', value=f'{o_author}', inline=True)
         await ctx.send(embed=embed)
+        
+        # 봇 상태 업데이트 (음악 재생 중)
+        if hasattr(self.bot, 'update_music_status'):
+            self.bot.update_music_status(title)
 
         
         
@@ -291,6 +329,12 @@ class DJ(commands.Cog):
             
                 if not ctx.voice_client.is_playing() and ctx.voice_client.is_paused() is False:
                     queue_list.pop(0)
+
+                    # 큐가 비어있으면 상태 초기화
+                    if len(queue_list) == 0:
+                        if hasattr(self.bot, 'update_music_status'):
+                            self.bot.update_music_status(None)
+                        break
 
                     link = queue_list[0]['link']
                     title = queue_list[0]['title']
@@ -303,10 +347,14 @@ class DJ(commands.Cog):
                     ctx.voice_client.play(track)
                     self.server[server_num].np_time = time.time()
 
-                    embed=discord.Embed(title='Play', description=f'[{title}]({o_url})', color=discord.Color.from_rgb(255, 0, 0))
+                    embed=discord.Embed(title='레이스 시작!', description=f'[{title}]({o_url})', color=discord.Color.from_rgb(0, 100, 200))
                     embed.add_field(name='Duration', value=f'{o_duration}', inline=True)
                     embed.add_field(name='Requested by', value=f'{o_author}', inline=True)
                     await ctx.send(embed=embed)
+                    
+                    # 봇 상태 업데이트 (다음 음악 재생 중)
+                    if hasattr(self.bot, 'update_music_status'):
+                        self.bot.update_music_status(title)
                     
                 else:
                     await asyncio.sleep(0.1)
@@ -340,7 +388,7 @@ class DJ(commands.Cog):
 
         
 
-        embed = discord.Embed(title="Queue Info")
+        embed = discord.Embed(title="레이스 대기열 정보", color=discord.Color.from_rgb(255, 20, 147))
         q_num = len(self.server[server_num].q_list)
         playlist = ""
         playlist_page = []
@@ -397,10 +445,17 @@ class DJ(commands.Cog):
         server_num = server_check(self, a_voice)
         
         if ctx.voice_client.is_playing():
-            await ctx.send("Skipping...")
+            await ctx.send("다음 레이스로!")
+        
+        # 봇 상태 업데이트 (다음 음악으로)
+        if hasattr(self.bot, 'update_music_status'):
+            if len(self.server[server_num].q_list) > 0:
+                self.bot.update_music_status(self.server[server_num].q_list[0]['title'])
+            else:
+                self.bot.update_music_status(None)
             self.bot.voice_clients[server_num].stop()
         elif not ctx.voice_client.is_playing():
-            await ctx.send("Nothing to skip")
+            await ctx.send("스킵할 레이스가 없어요!")
         
 
 
@@ -423,7 +478,11 @@ class DJ(commands.Cog):
         channel_id = self.bot.voice_clients[server_num].channel.id
         
         await leave(self, server_num)
-        await ctx.send(f"Leave from <#{channel_id}>")
+        await ctx.send(f"스마트 팔콘이 <#{channel_id}>에서 퇴장했어요!")
+        
+        # 봇 상태 초기화 (음성 채널 퇴장)
+        if hasattr(self.bot, 'update_music_status'):
+            self.bot.update_music_status(None)
     
 
         
@@ -457,7 +516,7 @@ class DJ(commands.Cog):
         
         queue_list.pop(index)
 
-        embed=discord.Embed(title='Deleted', description=f'[{q_title}]({q_url})', color=discord.Color.from_rgb(255, 0, 0))
+        embed=discord.Embed(title='레이스에서 제외됨', description=f'[{q_title}]({q_url})', color=discord.Color.from_rgb(255, 100, 100))
         embed.add_field(name='Position', value=f'{index}')
         embed.add_field(name='Duration', value=f'{q_duration}', inline=True)
         embed.add_field(name='Requested by', value=f'{q_author}', inline=True)
@@ -493,13 +552,13 @@ class DJ(commands.Cog):
             playing_time = datetime.timedelta(seconds=nowplaying_time - np_time)
             playing_time = str(playing_time).split('.')[0]
 
-            embed=discord.Embed(title='Now Playing', description=f'[{title}]({url})', color=discord.Color.from_rgb(255, 0, 0))
+            embed=discord.Embed(title='현재 레이스 중', description=f'[{title}]({url})', color=discord.Color.from_rgb(0, 200, 100))
             embed.add_field(name='Duration', value=f'{playing_time} / {duration}', inline=True)
             embed.add_field(name='Requested by', value=f'{author}', inline=True)
             await ctx.send(embed=embed)
 
         else:
-            await ctx.send("Nothing is playing")
+            await ctx.send("현재 레이스 중인 음악이 없어요!")
             
     
 
@@ -516,7 +575,7 @@ class DJ(commands.Cog):
         playlist = ""
         count = 0
 
-        embed = discord.Embed(title="Quick Numbers")
+        embed = discord.Embed(title="빠른 레이스 번호", color=discord.Color.from_rgb(255, 215, 0))
         
         for i in range(0, len(url_quick)):
         
@@ -557,7 +616,11 @@ class DJ(commands.Cog):
         self.bot.voice_clients[server_num].pause()
         
 
-        await ctx.send("Paused")
+        await ctx.send("휴식 시간!")
+        
+        # 봇 상태 업데이트 (일시정지)
+        if hasattr(self.bot, 'update_music_status'):
+            self.bot.update_music_status(None)
 
 
 
@@ -580,7 +643,12 @@ class DJ(commands.Cog):
         self.bot.voice_clients[server_num].resume()
         
 
-        await ctx.send("Resume")
+        await ctx.send("레이스 재개!")
+        
+        # 봇 상태 업데이트 (재생 재개)
+        if hasattr(self.bot, 'update_music_status'):
+            if len(self.server[server_num].q_list) > 0:
+                self.bot.update_music_status(self.server[server_num].q_list[0]['title'])
 
 
 

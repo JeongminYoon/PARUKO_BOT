@@ -8,12 +8,11 @@ from mutagen.mp3 import MP3
 ################ Message ##################
 ###########################################
 
-message_success = "ding-dong"
-message_fail = "You IDIOT!"
+message_success = "스마트 팔콘 도착!"
+message_fail = "레이스 중이야!"
 
-ffmpeg_path = "./ffmpeg/bin/ffmpeg"
 ringing_path = "./mp3/ringing/*.mp3"
-
+ffmpeg_path = "./ffmpeg/bin/ffmpeg"
 
 ###########################################
 ###########################################
@@ -32,8 +31,11 @@ class ringing(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         option = {
-                'format':'bestaudio/best', 
-                'noplaylist':True
+                'format': 'bestaudio/best', 
+                'noplaylist': True,
+                'extract_flat': False,
+                'no_warnings': True,
+                'default_search': 'auto'
                 }
         
     
@@ -71,7 +73,7 @@ class ringing(commands.Cog):
             await asyncio.sleep(audio.info.length)
             await self.bot.voice_clients[num].disconnect()
         else: 
-            await ctx.send(f"I'm busy to ringing somewhere.")
+            await ctx.send(f"미안! 파루코 지금 다른 곳에서 레이스 중이야!")
         
         
         
