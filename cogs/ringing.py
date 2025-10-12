@@ -74,9 +74,36 @@ class ringing(commands.Cog):
             await self.bot.voice_clients[num].disconnect()
         else: 
             await ctx.send(f"미안! 파루코 지금 다른 곳에서 레이스 중이야!")
+
+    @discord.app_commands.command(name="ringing", description="파루코를 지정된 음성 채널로 호출합니다")
+    @discord.app_commands.describe(channel="파루코를 호출할 음성 채널")
+    async def slash_ringing(self, interaction: discord.Interaction, channel: discord.VoiceChannel):
+        rng = random.randint(0,100)
+        
+        link = glob.glob(ringing_path)
+        audio = MP3(link[0])
+        
+        player = discord.FFmpegPCMAudio(executable=ffmpeg_path, source=link[0])
+
+        # failed
+        if rng in range(1,31): # 30%
+            await interaction.response.send_message(f"{interaction.user.mention} tried ringing <#{channel.id}>.\n{message_fail}")
+            return
+
+        #succeed
+        if self.bot.voice_clients == []:
+            await channel.connect()
+            num = server_check(self, channel)
+            voice_client = interaction.guild.voice_client
+            voice_client.play(player)
+            await interaction.response.send_message(f"{message_success}")
+            await asyncio.sleep(audio.info.length)
+            await self.bot.voice_clients[num].disconnect()
+        else: 
+            await interaction.response.send_message(f"미안! 파루코 지금 다른 곳에서 레이스 중이야!")
         
         
-        
+
 async def setup(bot):
     await bot.add_cog(ringing(bot))
 

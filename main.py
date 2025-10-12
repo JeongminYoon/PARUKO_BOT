@@ -62,12 +62,35 @@ async def main():
     async def on_ready():
         print("System: Smart Falcon Ready!")
         presence.start()
+        
+        # 슬래시 명령어 동기화
+        try:
+            print("슬래시 명령어 동기화 시작...")
+            synced = await bot.tree.sync()
+            print(f"✅ {len(synced)}개의 슬래시 명령어가 성공적으로 동기화되었습니다!")
+            for cmd in synced:
+                print(f"  - /{cmd.name}: {cmd.description}")
+        except Exception as e:
+            print(f"❌ 슬래시 명령어 동기화 실패: {e}")
+            import traceback
+            traceback.print_exc()
 
     @bot.command(name="reload")
     async def reload(ctx, extenseion):
         await bot.unload_extension(f"cogs.{extenseion}")
         await bot.load_extension(f"cogs.{extenseion}")
         await ctx.send(f"{extenseion} reloaded")
+
+    @bot.command(name="sync")
+    async def sync_commands(ctx):
+        """슬래시 명령어를 강제로 동기화합니다"""
+        try:
+            synced = await bot.tree.sync()
+            await ctx.send(f"✅ {len(synced)}개의 슬래시 명령어가 동기화되었습니다!")
+            for cmd in synced:
+                await ctx.send(f"  - /{cmd.name}: {cmd.description}")
+        except Exception as e:
+            await ctx.send(f"❌ 슬래시 명령어 동기화 실패: {e}")
 
     
 
