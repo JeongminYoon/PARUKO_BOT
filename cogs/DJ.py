@@ -19,7 +19,7 @@ import threading
 ###########################################
 ffmpeg_options = {
             'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -loglevel error',
-            'options': '-vn -ac 2 -ar 48000 -bufsize 64k -ss 0'
+            'options': '-vn -ac 2 -ar 48000 -bufsize 64k -ss 50.0'
         }
 
 import os
@@ -41,6 +41,10 @@ entry = 0  # 입장음 비활성화 (연결 불안정 해결)
 ################ Functions ################
 ##########################################
 async def leave(self, num):
+    # UI 정리
+    if hasattr(self, 'ui_manager'):
+        await self.ui_manager.cleanup_ui(num)
+    
     self.server.pop(num)
     await self.bot.voice_clients[num].disconnect()
 
@@ -106,6 +110,66 @@ class player():
 
 ################ Music GUI Classes ########
 ###########################################
+
+class MusicUIManager:
+    """음악 플레이어 UI를 관리하는 클래스"""
+    def __init__(self):
+        self.server_uis = {}  # server_num -> MusicPlayerView
+        self.server_messages = {}  # server_num -> discord.Message
+    
+    async def get_or_create_ui(self, bot, server_num, voice_client, track_info, ctx):
+        """UI를 가져오거나 새로 생성"""
+        if server_num in self.server_uis:
+            # 기존 UI 업데이트
+            ui = self.server_uis[server_num]
+            ui.track_info = track_info
+            ui.voice_client = voice_client
+            ui.start_time = time.time()
+            
+            # 메시지가 있으면 업데이트
+            if server_num in self.server_messages and self.server_messages[server_num]:
+                try:
+                    await ui.update_progress()
+                    return ui, self.server_messages[server_num]
+                except (discord.NotFound, discord.Forbidden):
+                    # 메시지가 삭제되었거나 권한이 없으면 새로 생성
+                    pass
+        
+        # 새 UI 생성
+        ui = MusicPlayerView(bot, server_num, voice_client, track_info)
+        self.server_uis[server_num] = ui
+        
+        # 새 메시지 전송
+        embed = ui.create_music_embed()
+        message = await ctx.send(embed=embed, view=ui)
+        ui.message = message
+        self.server_messages[server_num] = message
+        
+        return ui, message
+    
+    async def update_ui(self, server_num, track_info):
+        """특정 서버의 UI 업데이트"""
+        if server_num in self.server_uis:
+            ui = self.server_uis[server_num]
+            ui.track_info = track_info
+            ui.start_time = time.time()
+            await ui.update_progress()
+    
+    async def cleanup_ui(self, server_num):
+        """특정 서버의 UI 정리"""
+        if server_num in self.server_uis:
+            ui = self.server_uis[server_num]
+            if ui.update_task and not ui.update_task.done():
+                ui.update_task.cancel()
+            del self.server_uis[server_num]
+        
+        if server_num in self.server_messages:
+            del self.server_messages[server_num]
+    
+    async def cleanup_all(self):
+        """모든 UI 정리"""
+        for server_num in list(self.server_uis.keys()):
+            await self.cleanup_ui(server_num)
 
 class MusicPlayerView(discord.ui.View):
     def __init__(self, bot, server_num, voice_client, track_info):
@@ -250,19 +314,14 @@ class MusicPlayerView(discord.ui.View):
     async def update_progress(self):
         """프로그레스 바 업데이트"""
         if not self.message:
-            print("No message to update")  # 디버깅 로그
             return
         if self.is_updating:
-            print("Already updating, skipping")  # 디버깅 로그
             return
             
         try:
             self.is_updating = True
-            print("Creating new embed...")  # 디버깅 로그
             embed = self.create_music_embed()
-            print("Editing message...")  # 디버깅 로그
             await self.message.edit(embed=embed, view=self)
-            print("GUI updated successfully")  # 디버깅 로그
         except discord.NotFound:
             print("Message not found, stopping updates")
             self.is_updating = False
@@ -313,7 +372,6 @@ class MusicPlayerView(discord.ui.View):
             
             # seeking 플래그 설정
             self._seeking = True
-            print(f"Seeking to position: {position_seconds} seconds (real seek)")  # 디버깅 로그
             
             # 실제 음악 재생 위치 변경 시도
             url = self.track_info.get('url', '')
@@ -436,7 +494,6 @@ class MusicPlayerView(discord.ui.View):
     
     async def start_progress_updates(self):
         """프로그레스 바 자동 업데이트 시작"""
-        print("Starting progress updates...")  # 디버깅 로그
         
         # message가 설정될 때까지 기다림 (더 빠른 확인)
         wait_count = 0
@@ -449,17 +506,13 @@ class MusicPlayerView(discord.ui.View):
             print("ERROR: Message was not set after 10 seconds, stopping updates")
             return
         
-        print(f"Message found: {self.message.id}")  # 디버깅 로그
         
         update_count = 0
         try:
             while not self.is_finished():
                 if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
                     update_count += 1
-                    print(f"Progress update #{update_count}")  # 디버깅 로그
                     await self.update_progress()
-                else:
-                    print(f"Voice client status - playing: {self.voice_client.is_playing() if self.voice_client else 'No client'}, paused: {self.voice_client.is_paused() if self.voice_client else 'No client'}")  # 디버깅 로그
                 await asyncio.sleep(2)  # 2초마다 업데이트
         except asyncio.CancelledError:
             print("Progress updates cancelled")
@@ -626,7 +679,6 @@ class MusicPlayerView(discord.ui.View):
     async def refresh(self, interaction, button):
         """GUI 새로고침"""
         try:
-            print("Manual refresh triggered")  # 디버깅 로그
             await self.update_progress()
             await interaction.response.send_message("🔄 GUI 새로고침", ephemeral=True)
         except Exception as e:
@@ -839,6 +891,7 @@ class DJ(commands.Cog):
                 }
         self.DL = YoutubeDL(option)
         self.server = []
+        self.ui_manager = MusicUIManager()  # UI 관리자 추가
 
         self.out.start()
 
@@ -848,6 +901,16 @@ class DJ(commands.Cog):
 
     ################# Methods #################
     ###########################################
+    
+    def create_track_info(self, title, url, duration, author):
+        """트랙 정보 딕셔너리를 생성하는 헬퍼 메서드"""
+        return {
+            'title': title,
+            'url': url,
+            'duration': duration,
+            'author': author
+        }
+    
     async def left(self):
         try:
             for i in range(0, len(self.bot.voice_clients)):
@@ -1295,40 +1358,22 @@ class DJ(commands.Cog):
                 return
 
 
-        # 음악 재생 GUI 생성
-        track_info = {
-            'title': title,
-            'url': o_url,
-            'duration': o_duration,
-            'author': o_author
-        }
-        
-        music_view = MusicPlayerView(self.bot, server_num, voice_client, track_info)
-        embed = music_view.create_music_embed()
-        
-        print(f"Attempting to send message with embed: {embed.title}")  # 디버깅 로그
-        print(f"View has {len(music_view.children)} children")  # 디버깅 로그
+        # 음악 재생 GUI 생성 (UI 관리자 사용)
+        track_info = self.create_track_info(title, o_url, o_duration, o_author)
         
         try:
-            message = await ctx.send(embed=embed, view=music_view)
-            print(f"ctx.send() completed, message type: {type(message)}")  # 디버깅 로그
+            music_view, message = await self.ui_manager.get_or_create_ui(
+                self.bot, server_num, voice_client, track_info, ctx
+            )
+            print(f"UI created/updated for server {server_num}")
         except Exception as e:
-            print(f"ERROR: ctx.send() failed: {e}")
-            await ctx.reply("메시지 전송에 실패했습니다.")
+            print(f"ERROR: UI creation failed: {e}")
+            await ctx.reply("UI 생성에 실패했습니다.")
             return
-        
-        if message is None:
-            print("ERROR: ctx.send() returned None")
-            await ctx.reply("메시지 전송에 실패했습니다.")
-            return
-        
-        music_view.message = message
-        print(f"Message set for music_view: {message.id}")  # 디버깅 로그
         
         # 프로그레스 바 자동 업데이트 시작 (message 설정 후)
         try:
             music_view.update_task = asyncio.create_task(music_view.start_progress_updates())
-            print("Progress update task created successfully")  # 디버깅 로그
         except Exception as e:
             print(f"Failed to start progress updates: {e}")
         
@@ -1451,30 +1496,22 @@ class DJ(commands.Cog):
                             print(f"Queue playback error: {type(e).__name__}: {e}")
                             break
 
-                    # 음악 재생 GUI 생성 (큐에서 다음 곡)
-                    track_info = {
-                        'title': title,
-                        'url': o_url,
-                        'duration': o_duration,
-                        'author': o_author
-                    }
+                    # 음악 재생 GUI 생성 (큐에서 다음 곡 - UI 관리자 사용)
+                    track_info = self.create_track_info(title, o_url, o_duration, o_author)
                     
-                    music_view = MusicPlayerView(self.bot, server_num, voice_client, track_info)
-                    embed = music_view.create_music_embed()
-                    message = await ctx.send(embed=embed, view=music_view)
-                    
-                    if message is None:
-                        print("ERROR: ctx.send() returned None in queue")
-                        await ctx.reply("메시지 전송에 실패했습니다.")
+                    try:
+                        music_view, message = await self.ui_manager.get_or_create_ui(
+                            self.bot, server_num, voice_client, track_info, ctx
+                        )
+                        print(f"Queue UI created/updated for server {server_num}")
+                    except Exception as e:
+                        print(f"ERROR: Queue UI creation failed: {e}")
+                        await ctx.reply("UI 생성에 실패했습니다.")
                         continue
-                    
-                    music_view.message = message
-                    print(f"Message set for music_view: {message.id}")  # 디버깅 로그
                     
                     # 프로그레스 바 자동 업데이트 시작 (message 설정 후)
                     try:
                         music_view.update_task = asyncio.create_task(music_view.start_progress_updates())
-                        print("Progress update task created successfully")  # 디버깅 로그
                     except Exception as e:
                         print(f"Failed to start progress updates: {e}")
                     
@@ -1596,6 +1633,17 @@ class DJ(commands.Cog):
             else:
                 self.bot.update_music_status(None)
             voice_client.stop()
+            
+            # UI 업데이트 (다음 곡이 있으면)
+            if len(self.server[server_num].q_list) > 0:
+                next_track = self.server[server_num].q_list[0]
+                track_info = self.create_track_info(
+                    next_track['title'],
+                    next_track['url'],
+                    next_track['duration'],
+                    next_track.get('author', 'Unknown')
+                )
+                await self.ui_manager.update_ui(server_num, track_info)
         elif not voice_client.is_playing():
             await ctx.send("스킵할 레이스가 없어요!")
         
