@@ -18,8 +18,8 @@ import threading
 ################# Setup ###################
 ###########################################
 ffmpeg_options = {
-            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -loglevel error',
-            'options': '-vn -ac 2 -ar 48000 -bufsize 64k -ss 50.0'
+            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+            'options': '-vn'
         }
 
 import os
@@ -71,6 +71,7 @@ class player():
         
         self.q_list = []
         self.np_time = time.time()
+        self.repeat_mode = False  # 반복 모드 상태 추가
 
     def queue_insert(self, y_link, y_title, y_duration, o_url, o_author, insert_num):
         q_dic = {'link':'', 'title':'', 'duration':'', 'url':'', 'author':''}
@@ -170,6 +171,97 @@ class MusicUIManager:
         """모든 UI 정리"""
         for server_num in list(self.server_uis.keys()):
             await self.cleanup_ui(server_num)
+    
+    async def bring_ui_to_bottom(self, bot, server_num, ctx):
+        """UI를 채팅 맨 아래로 가져오기"""
+        if server_num not in self.server_uis:
+            return None, None
+        
+        ui = self.server_uis[server_num]
+        voice_client = bot.voice_clients[server_num] if server_num < len(bot.voice_clients) else None
+        
+        if not voice_client or not ui.track_info:
+            return None, None
+        
+        # 기존 메시지 삭제 (선택사항)
+        if server_num in self.server_messages and self.server_messages[server_num]:
+            try:
+                await self.server_messages[server_num].delete()
+            except:
+                pass  # 삭제 실패해도 계속 진행
+        
+        # 새 메시지 전송 (채팅 맨 아래에)
+        embed = ui.create_music_embed()
+        
+        # 빈 큐 상태인지 확인하여 파일 전송
+        if ui.track_info.get('is_empty', False):
+            try:
+                default_image_path = "default_player.png"
+                if os.path.exists(default_image_path):
+                    with open(default_image_path, 'rb') as f:
+                        file = discord.File(f, filename="default_player.png")
+                        message = await ctx.send(embed=embed, view=ui, file=file)
+                else:
+                    message = await ctx.send(embed=embed, view=ui)
+            except Exception as e:
+                print(f"Failed to send with image: {e}")
+                message = await ctx.send(embed=embed, view=ui)
+        else:
+            message = await ctx.send(embed=embed, view=ui)
+        
+        ui.message = message
+        self.server_messages[server_num] = message
+        
+        return ui, message
+    
+    async def show_empty_queue_ui(self, bot, server_num, ctx):
+        """빈 큐 상태의 UI 표시"""
+        if server_num not in self.server_uis:
+            return None, None
+        
+        ui = self.server_uis[server_num]
+        voice_client = bot.voice_clients[server_num] if server_num < len(bot.voice_clients) else None
+        
+        # 빈 큐 상태의 트랙 정보 생성
+        empty_track_info = {
+            'title': '재생 목록이 없어요',
+            'url': '',
+            'duration': 0,
+            'author': '',
+            'is_empty': True  # 빈 상태 표시용 플래그
+        }
+        
+        # 기존 메시지 삭제
+        if server_num in self.server_messages and self.server_messages[server_num]:
+            try:
+                await self.server_messages[server_num].delete()
+            except:
+                pass
+        
+        # 빈 상태 UI 생성
+        ui.track_info = empty_track_info
+        ui.voice_client = voice_client
+        ui.start_time = time.time()
+        
+        embed = ui.create_music_embed()
+        
+        # 기본 이미지 파일이 있으면 함께 전송
+        try:
+            default_image_path = "default_player.png"
+            if os.path.exists(default_image_path):
+                with open(default_image_path, 'rb') as f:
+                    file = discord.File(f, filename="default_player.png")
+                    message = await ctx.send(embed=embed, view=ui, file=file)
+            else:
+                message = await ctx.send(embed=embed, view=ui)
+        except Exception as e:
+            print(f"Failed to send with image: {e}")
+            message = await ctx.send(embed=embed, view=ui)
+        
+        ui.message = message
+        self.server_messages[server_num] = message
+        
+        return ui, message
 
 class MusicPlayerView(discord.ui.View):
     def __init__(self, bot, server_num, voice_client, track_info):
@@ -215,13 +307,14 @@ class MusicPlayerView(discord.ui.View):
     
     def create_music_embed(self):
         """음악 재생 정보가 포함된 임베드 생성"""
+        # 빈 큐 상태 확인
+        if self.track_info.get('is_empty', False):
+            return self.create_empty_queue_embed()
+        
         current_time = time.time() - self.start_time
         total_time = self.track_info.get('duration', 0)
         
         # 디버깅 로그
-        print(f"Debug - current_time: {current_time:.2f}, start_time: {self.start_time:.2f}, total_time: {total_time}")
-        print(f"Debug - time.time(): {time.time():.2f}")
-        
         # current_time이 음수인 경우 보정
         if current_time < 0:
             print("Warning: current_time is negative, correcting...")
@@ -269,6 +362,22 @@ class MusicPlayerView(discord.ui.View):
         status_emoji = "▶️" if self.voice_client and self.voice_client.is_playing() else "⏸️" if self.voice_client and self.voice_client.is_paused() else "⏹️"
         status_text = "재생 중" if self.voice_client and self.voice_client.is_playing() else "일시정지" if self.voice_client and self.voice_client.is_paused() else "정지"
         
+        # 반복 모드 상태 확인
+        repeat_status = ""
+        try:
+            server_num = None
+            for i, voice_client in enumerate(self.bot.voice_clients):
+                if voice_client.channel == self.voice_client.channel:
+                    server_num = i
+                    break
+            
+            if server_num is not None:
+                player_instance = self.bot.get_cog('DJ').server[server_num]
+                if hasattr(player_instance, 'repeat_mode') and player_instance.repeat_mode:
+                    repeat_status = " | 🔄 반복"
+        except:
+            pass
+        
         embed.add_field(
             name="👤 요청자",
             value=self.track_info.get('author', 'Unknown'),
@@ -277,7 +386,7 @@ class MusicPlayerView(discord.ui.View):
         
         embed.add_field(
             name="📊 상태",
-            value=f"{status_emoji} {status_text}",
+            value=f"{status_emoji} {status_text}{repeat_status}",
             inline=True
         )
         
@@ -305,6 +414,80 @@ class MusicPlayerView(discord.ui.View):
         
         # 푸터 정보
         embed.set_footer(text="🎵 PARUKO BOT Music Player • 실시간 업데이트")
+        
+        # 타임스탬프 추가
+        embed.timestamp = datetime.datetime.now()
+        
+        return embed
+    
+    def create_empty_queue_embed(self):
+        """빈 큐 상태의 임베드 생성"""
+        embed = discord.Embed(
+            title="🎵 현재 재생 중",
+            color=discord.Color.greyple()  # 회색으로 변경
+        )
+        
+        # 빈 큐 메시지
+        embed.add_field(
+            name="",
+            value="**재생 목록이 없어요**",
+            inline=False
+        )
+        
+        # 빈 정보 필드들
+        embed.add_field(
+            name="👤 요청자",
+            value="",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📊 상태",
+            value="⏹️ 정지",
+            inline=True
+        )
+        
+        embed.add_field(
+            name="📈 진행률",
+            value="0.0%",
+            inline=True
+        )
+        
+        # 빈 프로그레스 바
+        empty_progress_bar = "▬" * 40
+        embed.add_field(
+            name="⏱️ 재생 진행",
+            value=f"```\n{empty_progress_bar}\n0:00 / 0:00\n```",
+            inline=False
+        )
+        
+        # 기본 이미지 설정 (로컬 파일)
+        try:
+            # 기본 이미지 파일 경로
+            default_image_path = "default_player.png"
+            if os.path.exists(default_image_path):
+                # 로컬 파일을 Discord에 업로드하여 사용
+                with open(default_image_path, 'rb') as f:
+                    file = discord.File(f, filename="default_player.png")
+                    embed.set_image(url="attachment://default_player.png")
+            else:
+                # 기본 이미지가 없으면 간단한 텍스트로 대체
+                embed.add_field(
+                    name="",
+                    value="🎵 음악을 재생하려면 `!play [URL]` 명령어를 사용하세요!",
+                    inline=False
+                )
+        except Exception as e:
+            print(f"Default image error: {e}")
+            # 이미지 로드 실패 시 텍스트로 대체
+            embed.add_field(
+                name="",
+                value="🎵 음악을 재생하려면 `!play [URL]` 명령어를 사용하세요!",
+                inline=False
+            )
+        
+        # 푸터 정보
+        embed.set_footer(text="🎵 PARUKO GUI W.I.P • 대기 중")
         
         # 타임스탬프 추가
         embed.timestamp = datetime.datetime.now()
@@ -345,6 +528,11 @@ class MusicPlayerView(discord.ui.View):
     
     def is_finished(self):
         """음악 재생이 끝났는지 확인"""
+        # 빈 큐 상태면 업데이트 중지
+        if self.track_info.get('is_empty', False):
+            print("is_finished: Empty queue state")
+            return True
+            
         if not self.voice_client:
             print("is_finished: No voice client")
             return True
@@ -358,112 +546,89 @@ class MusicPlayerView(discord.ui.View):
         return False
     
     async def seek_to_position(self, position_seconds):
-        """음악을 특정 위치로 이동 (실제 재생 위치 변경)"""
+        """음악을 특정 위치로 이동 (스트리밍 방식)"""
         try:
             if not self.voice_client or not self.voice_client.is_playing():
                 print("Cannot seek: voice client not playing")
                 return
             
             # 현재 재생 중인 음악 정보 가져오기
-            url = self.track_info.get('url', '')
-            if not url:
+            original_url = self.track_info.get('url', '')
+            if not original_url:
                 print("Cannot seek: no URL available")
                 return
+            
+            print(f"Debug - Original URL: {original_url}")
+            
+            # URL에서 직접 오디오 URL 추출 (테스트 명령어와 동일한 방식)
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'noplaylist': True,
+                'skip_download': True,
+            }
+            
+            try:
+                with YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(original_url, download=False)
+                    url = info.get('url')
+                    print(f"Debug - Extracted audio URL: {url}")
+            except Exception as e:
+                print(f"Debug - Failed to extract audio URL: {e}")
+                url = original_url  # 실패 시 원본 URL 사용
             
             # seeking 플래그 설정
             self._seeking = True
             
-            # 실제 음악 재생 위치 변경 시도
-            url = self.track_info.get('url', '')
-            if not url:
-                print("Cannot seek: no URL available")
-                self._seeking = False
-                return
+            print(f"Seeking to {position_seconds} seconds...")
             
-            # 실제 음악 재생 위치 변경 시도 (로컬 파일 다운로드 방식)
-            print(f"Attempting real seek to {position_seconds} seconds using local file...")
-            
-            # 로컬 파일 경로 생성
-            import os
-            import hashlib
-            
-            # URL을 기반으로 고유한 파일명 생성 (확장자 없이)
-            url_hash = hashlib.md5(url.encode()).hexdigest()
-            local_file_path = f"downloads/{url_hash}"
-            
-            # 파일이 없으면 다운로드 (확장자 포함해서 확인)
-            if not os.path.exists(f"{local_file_path}.mp3"):
-                print(f"Downloading file to {local_file_path}...")
-                try:
-                    # YouTube 다운로드 옵션
-                    ydl_opts = {
-                        'format': 'bestaudio/best',
-                        'outtmpl': f"{local_file_path}.%(ext)s",
-                        'postprocessors': [{
-                            'key': 'FFmpegExtractAudio',
-                            'preferredcodec': 'mp3',
-                            'preferredquality': '192',
-                        }],
-                        'noplaylist': True,
-                        'ffmpeg_location': ffmpeg_location,
-                    }
-                    
-                    with YoutubeDL(ydl_opts) as ydl:
-                        ydl.download([url])
-                    print(f"File downloaded successfully: {local_file_path}")
-                except Exception as e:
-                    print(f"Download failed: {e}")
-                    self._seeking = False
-                    return
-            
-            # 로컬 파일로 seek 옵션 설정
-            ffmpeg_options = {
-                'before_options': f'-ss {position_seconds}',
-                'options': '-vn -b:a 192k -ar 48000 -ac 2 -f s16le'
+            # 스트리밍에서 seek를 위해 before_options에 -ss 추가 (테스트 방식)
+            seek_ffmpeg_options = {
+                'before_options': f'-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss {position_seconds}',
+                'options': '-vn'
             }
             
-            # 새 트랙 생성 (로컬 파일에서 seek 위치에서 시작)
-            new_track = discord.FFmpegPCMAudio(f"{local_file_path}.mp3", **ffmpeg_options, executable=ffmpeg_location)
+            # 새 트랙 생성
+            seek_track = discord.FFmpegPCMAudio(url, **seek_ffmpeg_options, executable=ffmpeg_location)
             
-            # 현재 재생 중지
+            # 기존 트랙 중지 후 새 트랙 재생 (테스트 방식)
+            print("Debug - Stopping current track...")
             self.voice_client.stop()
+            print("Debug - Waiting for stop to complete...")
+            await asyncio.sleep(1)  # 1초 대기 (테스트와 동일)
+            print("Debug - Stop completed, starting new track...")
             
-            # 잠시 대기 (재생 중지 완료 대기)
-            await asyncio.sleep(0.5)
+            # np_time 설정 (재생 시작 시간 기록)
+            if hasattr(self, 'server') and hasattr(self, 'server_num'):
+                self.server[self.server_num].np_time = time.time()
+                print(f"Debug - np_time set to: {self.server[self.server_num].np_time}")
             
-            # 새 위치에서 재생 시작
-            self.voice_client.play(new_track)
+            # GUI의 start_time 설정 (seek된 위치에서 시작하도록)
             self.start_time = time.time() - position_seconds
+            print(f"Debug - GUI start_time set to: {self.start_time} (for position {position_seconds}s)")
             
-            # 재생이 시작될 때까지 대기
-            await asyncio.sleep(1.0)
+            # 재생 전 상태 확인
+            print(f"Debug - Before play - connected: {self.voice_client.is_connected()}")
+            print(f"Debug - Before play - playing: {self.voice_client.is_playing()}")
+            print(f"Debug - Before play - paused: {self.voice_client.is_paused()}")
             
-            # 재생 상태 확인
-            if self.voice_client.is_playing():
-                print(f"Real seek completed successfully! Playing from {position_seconds} seconds using local file")
-            else:
-                print("Real seek failed, attempting recovery...")
-                # 복구 시도 - 원래 위치에서 재생
-                try:
-                    ffmpeg_options_recovery = {
-                        'before_options': '',
-                        'options': '-vn -b:a 192k -ar 48000 -ac 2 -f s16le'
-                    }
-                    recovery_track = discord.FFmpegPCMAudio(f"{local_file_path}.mp3", **ffmpeg_options_recovery, executable=ffmpeg_location)
-                    self.voice_client.play(recovery_track)
-                    self.start_time = time.time()
-                    print("Recovery: resumed from beginning using local file")
-                except Exception as e2:
-                    print(f"Recovery play error: {e2}")
+            self.voice_client.play(seek_track, after=lambda e: print(f"Seek track ended: {e}"))
+            
+            # 재생 후 상태 확인
+            await asyncio.sleep(0.5)  # 재생 시작 대기
+            print(f"Debug - After play - connected: {self.voice_client.is_connected()}")
+            print(f"Debug - After play - playing: {self.voice_client.is_playing()}")
+            print(f"Debug - After play - paused: {self.voice_client.is_paused()}")
+            
+
+            
+            print(f"Seek completed! Playing from {position_seconds} seconds")
             
             # seeking 플래그 해제
             self._seeking = False
-            
-            # GUI 업데이트
-            await self.update_progress()
+            print("Debug - Seeking flag cleared")
             
         except Exception as e:
-            print(f"Seek to position error: {e}")
+            print(f"Streaming seek error: {e}")
             import traceback
             traceback.print_exc()
             # seeking 플래그 해제
@@ -474,13 +639,13 @@ class MusicPlayerView(discord.ui.View):
                     url = self.track_info.get('url', '')
                     if url:
                         ffmpeg_options = {
-                            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2',
-                            'options': '-vn -b:a 192k -ar 48000 -ac 2 -f s16le'
+                            'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+                            'options': '-vn'
                         }
                         track = discord.FFmpegPCMAudio(url, **ffmpeg_options, executable=ffmpeg_location)
                         self.voice_client.play(track)
                         self.start_time = time.time()
-                        print("Recovery: resumed from beginning")
+                        print("Recovery: resumed from beginning using streaming")
             except Exception as e2:
                 print(f"Recovery play error: {e2}")
     
@@ -499,11 +664,11 @@ class MusicPlayerView(discord.ui.View):
         wait_count = 0
         while not self.message and wait_count < 20:
             print(f"Waiting for message to be set... ({wait_count + 1}/20)")
-            await asyncio.sleep(0.5)  # 0.5초마다 확인
+            await asyncio.sleep(0.1)  # 0.1초마다 확인 (최대 2초)
             wait_count += 1
         
         if not self.message:
-            print("ERROR: Message was not set after 10 seconds, stopping updates")
+            print("ERROR: Message was not set after 2 seconds, stopping updates")
             return
         
         
@@ -513,7 +678,7 @@ class MusicPlayerView(discord.ui.View):
                 if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
                     update_count += 1
                     await self.update_progress()
-                await asyncio.sleep(2)  # 2초마다 업데이트
+                await asyncio.sleep(1)  # 1초마다 업데이트
         except asyncio.CancelledError:
             print("Progress updates cancelled")
             return
@@ -647,19 +812,6 @@ class MusicPlayerView(discord.ui.View):
             if not interaction.response.is_done():
                 await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
     
-    @discord.ui.button(label="⏹️ 정지", style=discord.ButtonStyle.danger, row=1)
-    async def stop_music(self, interaction, button):
-        """음악 정지"""
-        try:
-            if self.voice_client:
-                self.voice_client.stop()
-                await interaction.response.send_message("⏹️ 음악 정지", ephemeral=True)
-            else:
-                await interaction.response.send_message("재생할 음악이 없습니다.", ephemeral=True)
-        except Exception as e:
-            print(f"Stop music error: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
     
     @discord.ui.button(label="⏭️ 다음 곡", style=discord.ButtonStyle.primary, row=1)
     async def skip_music(self, interaction, button):
@@ -675,51 +827,29 @@ class MusicPlayerView(discord.ui.View):
             if not interaction.response.is_done():
                 await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
     
-    @discord.ui.button(label="🔄 새로고침", style=discord.ButtonStyle.secondary, row=1)
-    async def refresh(self, interaction, button):
-        """GUI 새로고침"""
-        try:
-            await self.update_progress()
-            await interaction.response.send_message("🔄 GUI 새로고침", ephemeral=True)
-        except Exception as e:
-            print(f"Refresh error: {e}")
-            import traceback
-            traceback.print_exc()
-            if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
     
-    @discord.ui.button(label="📍 위치 설정", style=discord.ButtonStyle.secondary, row=1)
-    async def set_position(self, interaction, button):
-        """재생 위치 설정 모달 열기"""
-        try:
-            modal = PositionModal(self)
-            await interaction.response.send_modal(modal)
-        except Exception as e:
-            print(f"Set position error: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
     
-    @discord.ui.button(label="🔊 볼륨", style=discord.ButtonStyle.secondary, row=2)
-    async def volume_control(self, interaction, button):
-        """볼륨 조절 모달 열기"""
-        try:
-            modal = VolumeModal(self)
-            await interaction.response.send_modal(modal)
-        except Exception as e:
-            print(f"Volume control error: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
     
-    @discord.ui.button(label="🔄 반복", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="🔄 반복", style=discord.ButtonStyle.secondary, row=1)
     async def repeat_toggle(self, interaction, button):
         """반복 재생 토글"""
         try:
-            if hasattr(self, 'repeat_mode'):
-                self.repeat_mode = not self.repeat_mode
-            else:
-                self.repeat_mode = True
+            # 서버 번호 찾기
+            server_num = None
+            for i, voice_client in enumerate(self.bot.voice_clients):
+                if voice_client.channel == interaction.user.voice.channel:
+                    server_num = i
+                    break
             
-            if self.repeat_mode:
+            if server_num is None:
+                await interaction.response.send_message("❌ 봇이 음성 채널에 연결되어 있지 않습니다!", ephemeral=True)
+                return
+            
+            # 반복 모드 토글
+            player_instance = self.bot.get_cog('DJ').server[server_num]
+            player_instance.repeat_mode = not player_instance.repeat_mode
+            
+            if player_instance.repeat_mode:
                 button.label = "🔄 반복 ON"
                 button.style = discord.ButtonStyle.success
                 await interaction.response.send_message("🔄 반복 재생이 활성화되었습니다.", ephemeral=True)
@@ -727,23 +857,85 @@ class MusicPlayerView(discord.ui.View):
                 button.label = "🔄 반복"
                 button.style = discord.ButtonStyle.secondary
                 await interaction.response.send_message("🔄 반복 재생이 비활성화되었습니다.", ephemeral=True)
+                
         except Exception as e:
             print(f"Repeat toggle error: {e}")
+            import traceback
+            traceback.print_exc()
             if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
+                await interaction.response.send_message("❌ 반복 모드 설정 중 오류가 발생했습니다.", ephemeral=True)
     
     
-    @discord.ui.button(label="📋 큐", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="📋 큐", style=discord.ButtonStyle.secondary, row=1)
     async def show_queue(self, interaction, button):
         """대기열 표시"""
         try:
-            await interaction.response.send_message("📋 대기열 정보를 표시합니다.", ephemeral=True)
+            # 서버 번호 찾기
+            server_num = None
+            for i, voice_client in enumerate(self.bot.voice_clients):
+                if voice_client.channel == interaction.user.voice.channel:
+                    server_num = i
+                    break
+            
+            if server_num is None:
+                await interaction.response.send_message("❌ 봇이 음성 채널에 연결되어 있지 않습니다!", ephemeral=True)
+                return
+            
+            # 대기열 정보 가져오기
+            queue_list = self.bot.get_cog('DJ').server[server_num].q_list
+            
+            if len(queue_list) == 0:
+                embed = discord.Embed(
+                    title="📋 대기열 정보",
+                    description="대기열이 비어있습니다.",
+                    color=discord.Color.blue()
+                )
+            else:
+                embed = discord.Embed(
+                    title="📋 대기열 정보",
+                    color=discord.Color.blue()
+                )
+                
+                # 현재 재생 중인 곡과 대기 중인 곡들 표시
+                queue_text = ""
+                total_duration = datetime.timedelta(seconds=0)
+                
+                for i, track in enumerate(queue_list):
+                    title = track['title']
+                    duration = track['duration']
+                    author = track['author']
+                    url = track['url']
+                    
+                    total_duration += duration
+                    
+                    if i == 0:
+                        # 현재 재생 중인 곡
+                        queue_text += f"🎵 **{i+1}. [{title}]({url})** | {duration} | {author}\n"
+                    else:
+                        # 대기 중인 곡들
+                        queue_text += f"{i+1}. [{title}]({url}) | {duration} | {author}\n"
+                    
+                    # 임베드 필드 길이 제한 (2000자)
+                    if len(queue_text) > 1800:
+                        queue_text += f"\n... 및 {len(queue_list) - i - 1}곡 더"
+                        break
+                
+                embed.add_field(
+                    name=f"총 {len(queue_list)}곡 | 총 재생시간: {total_duration}",
+                    value=queue_text or "대기열이 비어있습니다.",
+                    inline=False
+                )
+            
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            
         except Exception as e:
             print(f"Show queue error: {e}")
+            import traceback
+            traceback.print_exc()
             if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
+                await interaction.response.send_message("❌ 대기열 정보를 가져오는 중 오류가 발생했습니다.", ephemeral=True)
     
-    @discord.ui.button(label="ℹ️ 정보", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="ℹ️ 정보", style=discord.ButtonStyle.secondary, row=1)
     async def show_info(self, interaction, button):
         """곡 정보 표시"""
         try:
@@ -764,98 +956,93 @@ URL: {self.track_info.get('url', 'Unknown')}
             if not interaction.response.is_done():
                 await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
     
-    
-    @discord.ui.button(label="🔊 볼륨+", style=discord.ButtonStyle.secondary, row=3)
-    async def volume_up(self, interaction, button):
-        """볼륨 증가"""
+    @discord.ui.button(label="⬇️ GUI 아래로", style=discord.ButtonStyle.secondary, row=2)
+    async def move_gui_down(self, interaction, button):
+        """GUI를 채팅 맨 아래로 이동"""
         try:
-            await interaction.response.send_message("🔊 볼륨을 증가시켰습니다.", ephemeral=True)
-        except Exception as e:
-            print(f"Volume up error: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
-    
-    @discord.ui.button(label="🔉 볼륨-", style=discord.ButtonStyle.secondary, row=3)
-    async def volume_down(self, interaction, button):
-        """볼륨 감소"""
-        try:
-            await interaction.response.send_message("🔉 볼륨을 감소시켰습니다.", ephemeral=True)
-        except Exception as e:
-            print(f"Volume down error: {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message("오류가 발생했습니다.", ephemeral=True)
-    
-
-
-class PositionModal(discord.ui.Modal):
-    def __init__(self, music_view):
-        super().__init__(title="📍 재생 위치 설정")
-        self.music_view = music_view
-        
-        self.add_item(discord.ui.InputText(
-            label="분:초 형식으로 입력 (예: 2:30)",
-            placeholder="0:00",
-            min_length=1,
-            max_length=10
-        ))
-    
-    async def callback(self, interaction):
-        try:
-            time_input = self.children[0].value
-            # 분:초 형식을 초로 변환
-            if ':' in time_input:
-                minutes, seconds = map(int, time_input.split(':'))
-                target_seconds = minutes * 60 + seconds
+            # 서버 번호 찾기
+            server_num = None
+            for i, voice_client in enumerate(self.bot.voice_clients):
+                if voice_client.channel == interaction.user.voice.channel:
+                    server_num = i
+                    break
+            
+            if server_num is None:
+                await interaction.response.send_message("❌ 봇이 음성 채널에 연결되어 있지 않습니다!", ephemeral=True)
+                return
+            
+            # UI 관리자 가져오기
+            ui_manager = self.bot.get_cog('DJ').ui_manager
+            
+            # UI가 존재하는지 확인
+            if server_num not in ui_manager.server_uis:
+                await interaction.response.send_message("❌ 현재 재생 중인 음악이 없습니다!", ephemeral=True)
+                return
+            
+            # FakeCtx 생성 (기존 bring_ui_to_bottom 메서드 사용)
+            class FakeCtx:
+                def __init__(self, interaction):
+                    self.author = interaction.user
+                    self.channel = interaction.channel
+                    self.guild = interaction.guild
+                
+                async def send(self, content=None, embed=None, view=None, file=None):
+                    try:
+                        if embed and view and file:
+                            return await interaction.followup.send(embed=embed, view=view, file=file)
+                        elif embed and view:
+                            return await interaction.followup.send(embed=embed, view=view)
+                        elif embed:
+                            return await interaction.followup.send(embed=embed)
+                        else:
+                            return await interaction.followup.send(content)
+                    except discord.NotFound:
+                        # Webhook이 만료된 경우 채널에 직접 전송
+                        if embed and view and file:
+                            return await self.channel.send(embed=embed, view=view, file=file)
+                        elif embed and view:
+                            return await self.channel.send(embed=embed, view=view)
+                        elif embed:
+                            return await self.channel.send(embed=embed)
+                        else:
+                            return await self.channel.send(content)
+            
+            ctx = FakeCtx(interaction)
+            
+            # 즉시 응답 (3초 제한 해결)
+            await interaction.response.send_message("⏳ GUI를 이동하는 중...", ephemeral=True, delete_after=1)
+            
+            # UI를 채팅 맨 아래로 가져오기
+            ui, message = await ui_manager.bring_ui_to_bottom(self.bot, server_num, ctx)
+            
+            if ui and message:
+                # followup으로 성공 메시지 전송
+                await interaction.followup.send("✅ GUI를 채팅 맨 아래로 이동했습니다!", ephemeral=True)
             else:
-                target_seconds = int(time_input)
-            
-            # 재생 위치 설정
-            if self.music_view.voice_client and self.music_view.voice_client.is_playing():
-                total_time = self.music_view.track_info.get('duration', 0)
-                if hasattr(total_time, 'total_seconds'):
-                    total_time = total_time.total_seconds()
-                target_seconds = min(target_seconds, total_time)
-                self.music_view.start_time = time.time() - target_seconds
-                await interaction.response.send_message(f"📍 재생 위치를 {time_input}로 설정했습니다.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ 재생 중인 음악이 없습니다.", ephemeral=True)
-            
-        except ValueError:
-            await interaction.response.send_message("❌ 올바른 시간 형식을 입력해주세요. (예: 2:30)", ephemeral=True)
+                # followup으로 오류 메시지 전송
+                await interaction.followup.send("❌ GUI 이동 중 오류가 발생했습니다!", ephemeral=True)
+                
         except Exception as e:
-            await interaction.response.send_message(f"❌ 오류가 발생했습니다: {str(e)}", ephemeral=True)
-
-
-class VolumeModal(discord.ui.Modal):
-    def __init__(self, music_view):
-        super().__init__(title="🔊 볼륨 조절")
-        self.music_view = music_view
-        
-        self.add_item(discord.ui.InputText(
-            label="볼륨 (0-100)",
-            placeholder="50",
-            min_length=1,
-            max_length=3
-        ))
-    
-    async def callback(self, interaction):
-        try:
-            volume_input = self.children[0].value
-            volume = int(volume_input)
-            
-            if 0 <= volume <= 100:
-                if self.music_view.voice_client:
-                    # 볼륨 설정 (Discord.py에서는 직접 볼륨 조절이 제한적)
-                    await interaction.response.send_message(f"🔊 볼륨을 {volume}%로 설정했습니다.", ephemeral=True)
+            print(f"Move GUI down error: {e}")
+            import traceback
+            traceback.print_exc()
+            try:
+                if not interaction.response.is_done():
+                    await interaction.response.send_message("❌ 오류가 발생했습니다!", ephemeral=True)
                 else:
-                    await interaction.response.send_message("❌ 재생 중인 음악이 없습니다.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ 볼륨은 0-100 사이의 값이어야 합니다.", ephemeral=True)
-            
-        except ValueError:
-            await interaction.response.send_message("❌ 올바른 숫자를 입력해주세요.", ephemeral=True)
-        except Exception as e:
-            await interaction.response.send_message(f"❌ 오류가 발생했습니다: {str(e)}", ephemeral=True)
+                    await interaction.followup.send("❌ 오류가 발생했습니다!", ephemeral=True)
+            except Exception as followup_error:
+                print(f"Followup error: {followup_error}")
+                # 최후의 수단: 채널에 직접 전송
+                try:
+                    await interaction.channel.send("❌ GUI 이동 중 오류가 발생했습니다!")
+                except:
+                    print("Failed to send error message to channel")
+    
+    
+    
+
+
 
 
 ###########################################
@@ -871,7 +1058,7 @@ class DJ(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         option = {
-                'format': 'bestaudio[abr>=320]/bestaudio[abr>=256]/bestaudio[abr>=192]/bestaudio/best', 
+                'format': 'bestaudio/best', 
                 'noplaylist': True,
                 'skip_download': True,
                 'extract_flat': False,
@@ -1086,7 +1273,7 @@ class DJ(commands.Cog):
                     print(f"Dummy audio play failed: {e}")
                 
                 # 연결 후 충분한 대기 시간 (연결 안정성 향상)
-                await asyncio.sleep(2.0)  # 1초에서 2초로 증가
+                await asyncio.sleep(0.5)  # 2초에서 0.5초로 단축
                 
                 # 연결 후 상태 확인
                 voice_client_after = self.bot.voice_clients[-1]
@@ -1221,55 +1408,14 @@ class DJ(commands.Cog):
         o_author = queue_list[0]['author']
         o_duration = queue_list[0]['duration']
 
-        # 로컬 파일 경로 생성
-        import os
-        import hashlib
-        
-        # URL을 기반으로 고유한 파일명 생성 (확장자 없이)
-        url_hash = hashlib.md5(o_url.encode()).hexdigest()
-        local_file_path = f"downloads/{url_hash}"
-        
-        # 파일이 없으면 다운로드 (확장자 포함해서 확인)
-        if not os.path.exists(f"{local_file_path}.mp3"):
-            print(f"Downloading file to {local_file_path}...")
-            try:
-                # YouTube 다운로드 옵션
-                ydl_opts = {
-                    'format': 'bestaudio/best',
-                    'outtmpl': f"{local_file_path}.%(ext)s",
-                    'postprocessors': [{
-                        'key': 'FFmpegExtractAudio',
-                        'preferredcodec': 'mp3',
-                        'preferredquality': '192',
-                    }],
-                    'noplaylist': True,
-                    'ffmpeg_location': ffmpeg_location,
-                }
-                
-                with YoutubeDL(ydl_opts) as ydl:
-                    ydl.download([o_url])
-                print(f"File downloaded successfully: {local_file_path}")
-            except Exception as e:
-                print(f"Download failed: {e}")
-                await ctx.reply(f"음악 다운로드 중 오류가 발생했습니다: {str(e)}")
-                return
-        
-        print(f"Creating FFmpeg track from local file: {local_file_path}.mp3")
-        print(f"File exists: {os.path.exists(f'{local_file_path}.mp3')}")
-        if os.path.exists(f"{local_file_path}.mp3"):
-            print(f"File size: {os.path.getsize(f'{local_file_path}.mp3')} bytes")
-        
+        # 스트리밍 방식으로 트랙 생성
+        print(f"Creating streaming track from URL: {link}")
         try:
-            # 로컬 파일용 FFmpeg 옵션
-            local_ffmpeg_options = {
-                'before_options': '',
-                'options': '-vn -b:a 192k -ar 48000 -ac 2 -f s16le'
-            }
-            track = discord.FFmpegPCMAudio(f"{local_file_path}.mp3", **local_ffmpeg_options, executable=ffmpeg_location)
-            print("FFmpeg track created successfully from local file")
+            track = discord.FFmpegPCMAudio(link, **ffmpeg_options, executable=ffmpeg_location)
+            print("FFmpeg track created successfully from streaming")
         except Exception as e:
             print(f"FFmpeg track creation failed: {type(e).__name__}: {e}")
-            await ctx.reply(f"음악 파일 처리 중 오류가 발생했습니다: {str(e)}")
+            await ctx.reply(f"음악 스트리밍 중 오류가 발생했습니다: {str(e)}")
             return
         
         # voice_client 사용 (레거시는 직접 접근, 슬래시는 설정된 값 사용)
@@ -1330,9 +1476,9 @@ class DJ(commands.Cog):
             voice_client.play(track)
             print("Track play command sent successfully")
             self.server[server_num].np_time = time.time()
-            
+
             # 재생 후 상태 확인
-            await asyncio.sleep(1.0)  # 재생 시작 대기 (더 긴 시간)
+            await asyncio.sleep(0.5)  # 재생 시작 대기 (0.5초로 단축)
             print(f"After play - voice_client connected: {voice_client.is_connected()}")
             print(f"After play - voice_client playing: {voice_client.is_playing()}")
             print(f"After play - voice_client paused: {voice_client.is_paused()}")
@@ -1340,7 +1486,7 @@ class DJ(commands.Cog):
             # 재생이 시작되지 않았으면 추가 대기
             if not voice_client.is_playing():
                 print("Track not playing, waiting longer...")
-                await asyncio.sleep(2.0)
+                await asyncio.sleep(1.0)  # 2초에서 1초로 단축
                 print(f"After longer wait - voice_client playing: {voice_client.is_playing()}")
             
         except discord.ClientException as e:
@@ -1380,7 +1526,7 @@ class DJ(commands.Cog):
         # 봇 상태 업데이트 (음악 재생 중)
         if hasattr(self.bot, 'update_music_status'):
             self.bot.update_music_status(title)
-
+                    
         
         
         while True:
@@ -1400,12 +1546,48 @@ class DJ(commands.Cog):
                     break
                 
                 if not voice_client.is_playing() and voice_client.is_paused() is False:
-                    queue_list.pop(0)
+                    # seek 중인지 확인 - seek 중이면 큐에서 제거하지 않음
+                    is_seeking = False
+                    try:
+                        if hasattr(self, 'ui_manager') and self.ui_manager:
+                            if server_num in self.ui_manager.server_uis:
+                                music_view = self.ui_manager.server_uis[server_num]
+                                if music_view and hasattr(music_view, '_seeking'):
+                                    is_seeking = music_view._seeking
+                                    print(f"Debug - Seeking flag status: {is_seeking}")
+                                    if is_seeking:
+                                        print("Seek in progress, skipping queue removal")
+                    except Exception as e:
+                        print(f"Error checking seek status: {e}")
+                    
+                    if not is_seeking:
+                        print("Debug - Checking repeat mode before removing song")
+                        # 반복 모드 확인
+                        if self.server[server_num].repeat_mode and len(queue_list) > 0:
+                            print("Debug - Repeat mode ON, keeping current song in queue")
+                            # 반복 모드가 켜져있으면 현재 곡을 큐의 맨 뒤로 이동
+                            current_song = queue_list.pop(0)
+                            queue_list.append(current_song)
+                        else:
+                            print("Debug - Removing current song from queue")
+                            queue_list.pop(0)
+                    else:
+                        # seek 중이면 잠시 대기 후 다시 체크
+                        print("Debug - Seek in progress, waiting...")
+                        await asyncio.sleep(0.1)
+                        continue
 
-                    # 큐가 비어있으면 상태 초기화
+                    # 큐가 비어있으면 빈 큐 UI 표시
                     if len(queue_list) == 0:
                         if hasattr(self.bot, 'update_music_status'):
                             self.bot.update_music_status(None)
+                        
+                        # 빈 큐 UI 표시
+                        try:
+                            await self.ui_manager.show_empty_queue_ui(self.bot, server_num, ctx)
+                        except Exception as e:
+                            print(f"Failed to show empty queue UI: {e}")
+                        
                         break
 
                     link = queue_list[0]['link']
@@ -1414,48 +1596,31 @@ class DJ(commands.Cog):
                     o_author = queue_list[0]['author']
                     o_duration = queue_list[0]['duration']
 
-
-                    # 로컬 파일 경로 생성
-                    import os
-                    import hashlib
+                    # 스트리밍 방식으로 트랙 생성
+                    print(f"Creating streaming track from URL: {link}")
+                    try:
+                        track = discord.FFmpegPCMAudio(link, **ffmpeg_options, executable=ffmpeg_location)
+                        print("FFmpeg track created successfully from streaming")
+                    except Exception as e:
+                        print(f"FFmpeg track creation failed: {type(e).__name__}: {e}")
+                        await ctx.reply(f"음악 스트리밍 중 오류가 발생했습니다: {str(e)}")
+                        return
                     
-                    # URL을 기반으로 고유한 파일명 생성 (확장자 없이)
-                    url_hash = hashlib.md5(o_url.encode()).hexdigest()
-                    local_file_path = f"downloads/{url_hash}"
+                    # voice_client 사용 (레거시는 직접 접근, 슬래시는 설정된 값 사용)
+                    if hasattr(ctx, '_voice_client'):
+                        # 슬래시 명령어인 경우
+                        voice_client = ctx.voice_client if ctx.voice_client is not None else (self.bot.voice_clients[server_num] if server_num is not None else None)
+                    else:
+                        # 레거시 명령어인 경우
+                        voice_client = self.bot.voice_clients[server_num] if server_num is not None else None
                     
-                    # 파일이 없으면 다운로드 (확장자 포함해서 확인)
-                    if not os.path.exists(f"{local_file_path}.mp3"):
-                        print(f"Downloading file to {local_file_path}...")
-                        try:
-                            # YouTube 다운로드 옵션
-                            ydl_opts = {
-                                'format': 'bestaudio/best',
-                                'outtmpl': f"{local_file_path}.%(ext)s",
-                                'postprocessors': [{
-                                    'key': 'FFmpegExtractAudio',
-                                    'preferredcodec': 'mp3',
-                                    'preferredquality': '192',
-                                }],
-                                'noplaylist': True,
-                                'ffmpeg_location': ffmpeg_location,
-                            }
-                            
-                            with YoutubeDL(ydl_opts) as ydl:
-                                ydl.download([o_url])
-                            print(f"File downloaded successfully: {local_file_path}")
-                        except Exception as e:
-                            print(f"Download failed: {e}")
-                            continue
-                    
-                    # 로컬 파일용 FFmpeg 옵션
-                    local_ffmpeg_options = {
-                        'before_options': '',
-                        'options': '-vn -b:a 192k -ar 48000 -ac 2 -f s16le'
-                    }
-                    track = discord.FFmpegPCMAudio(f"{local_file_path}.mp3", **local_ffmpeg_options, executable=ffmpeg_location)
+                    # voice_client가 None인지 확인
+                    if voice_client is None:
+                        print("Voice client is None, breaking loop")
+                        break
                     
                     # 음악 재생 전에 잠시 대기하여 스트림이 준비되도록 함
-                    await asyncio.sleep(0.1)
+                    await asyncio.sleep(0.05)  # 0.1초에서 0.05초로 단축
                     
                     # voice_client 연결 상태 재확인
                     if not voice_client.is_connected():
@@ -1474,7 +1639,7 @@ class DJ(commands.Cog):
                     try:
                         dummy_audio = discord.FFmpegPCMAudio("silence.mp3", executable=ffmpeg_location)
                         voice_client.play(dummy_audio)
-                        await asyncio.sleep(0.05)  # 더 짧은 시간
+                        await asyncio.sleep(0.02)  # 0.05초에서 0.02초로 단축
                         voice_client.stop()
                         print("Dummy audio played before queue track")
                     except Exception as e:
@@ -1521,11 +1686,6 @@ class DJ(commands.Cog):
                     
                 else:
                     await asyncio.sleep(0.1)
-
-                
-                
-                
-                    
             
             except:
                 track.cleanup()
@@ -1549,7 +1709,9 @@ class DJ(commands.Cog):
 
         server_num = server_check(self, a_voice)
 
-        
+        if server_num is None:
+            await ctx.reply("봇이 음성 채널에 연결되어 있지 않습니다!")
+            return
 
         embed = discord.Embed(title="레이스 대기열 정보", color=discord.Color.from_rgb(255, 20, 147))
         q_num = len(self.server[server_num].q_list)
@@ -1559,19 +1721,23 @@ class DJ(commands.Cog):
         index = num-1
         count = 0
 
-        if q_num <= 1:
-            embed.add_field(name='Empty', value='')
+        # 디버그 정보 추가
+
+        if q_num == 0:
+            embed.add_field(name='Empty', value='큐가 비어있습니다.')
         
         else:
-            for i in range(1, q_num):
+            for i in range(0, q_num):
                 p_title = self.server[server_num].q_list[i]['title']
                 p_url = self.server[server_num].q_list[i]['url']
                 p_author = self.server[server_num].q_list[i]['author']
                 p_duration = self.server[server_num].q_list[i]['duration']
 
-                
-        
-                playlist += f"{i}. [{p_title}]({p_url}) | {p_duration} | {p_author}\n"
+                # 현재 재생 중인 곡 표시
+                if i == 0:
+                    playlist += f"🎵 **{i+1}. [{p_title}]({p_url})** | {p_duration} | {p_author}\n"
+                else:
+                    playlist += f"{i+1}. [{p_title}]({p_url}) | {p_duration} | {p_author}\n"
                 count += 1
                 
                 #페이지당 7곡, 임베드 용량 초과하지 않도록 잘라냄
@@ -1934,6 +2100,9 @@ class DJ(commands.Cog):
     @discord.app_commands.command(name="queue", description="음악 대기열을 확인합니다")
     @discord.app_commands.describe(num="페이지 번호 (기본값: 1)")
     async def slash_queue(self, interaction: discord.Interaction, num: int = 1):
+        # 즉시 응답
+        await interaction.response.defer()
+        
         class FakeCtx:
             def __init__(self, interaction):
                 self.author = interaction.user
@@ -1950,24 +2119,25 @@ class DJ(commands.Cog):
                 self._voice_client = value
                 
             async def reply(self, message):
-                await interaction.response.send_message(message, ephemeral=True)
+                await interaction.followup.send(message, ephemeral=True)
                 
             async def send(self, content=None, embed=None, view=None):
                 if embed and view:
-                    return await interaction.response.send_message(embed=embed, view=view)
+                    return await interaction.followup.send(embed=embed, view=view)
                 elif embed:
-                    return await interaction.response.send_message(embed=embed)
-                else:
-                    return await interaction.response.send_message(content)
-                
-            async def send(self, content=None, embed=None):
-                if embed:
                     return await interaction.followup.send(embed=embed)
                 else:
                     return await interaction.followup.send(content)
         
         ctx = FakeCtx(interaction)
-        await self.queue(ctx, num)
+        
+        try:
+            await self.queue(ctx, num)
+        except Exception as e:
+            print(f"Slash command queue error: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            await interaction.followup.send(f"오류가 발생했습니다: {str(e)}", ephemeral=True)
 
     @discord.app_commands.command(name="skip", description="다음 곡으로 넘어갑니다")
     async def slash_skip(self, interaction: discord.Interaction):
@@ -2227,6 +2397,157 @@ class DJ(commands.Cog):
             import traceback
             traceback.print_exc()
             await interaction.followup.send(f"오류가 발생했습니다: {str(e)}", ephemeral=True)
+
+    @discord.app_commands.command(name="gui", description="플레이어 GUI를 채팅 맨 아래로 가져옵니다")
+    async def slash_bring_gui(self, interaction: discord.Interaction):
+        """슬래시 명령어: 플레이어 GUI를 채팅 맨 아래로 가져오기"""
+        # 즉시 응답
+        await interaction.response.defer()
+        
+        class FakeCtx:
+            def __init__(self, interaction):
+                self.author = interaction.user
+                self.channel = interaction.channel
+                self.guild = interaction.guild
+                self._voice_client = None
+                
+            @property
+            def voice_client(self):
+                return self._voice_client
+                
+            @voice_client.setter
+            def voice_client(self, value):
+                self._voice_client = value
+                
+            async def reply(self, message, delete_after=None):
+                if delete_after:
+                    await interaction.followup.send(message, ephemeral=True, delete_after=delete_after)
+                else:
+                    await interaction.followup.send(message, ephemeral=True)
+                
+            async def send(self, content=None, embed=None, view=None):
+                if embed and view:
+                    return await interaction.followup.send(embed=embed, view=view)
+                elif embed:
+                    return await interaction.followup.send(embed=embed)
+                else:
+                    return await interaction.followup.send(content)
+        
+        ctx = FakeCtx(interaction)
+        
+        try:
+            # 기존 bring_gui 메서드 호출
+            await self.bring_gui(ctx)
+        except Exception as e:
+            print(f"Slash command gui error: {type(e).__name__}: {e}")
+            import traceback
+            traceback.print_exc()
+            await interaction.followup.send(f"오류가 발생했습니다: {str(e)}", ephemeral=True)
+
+    @commands.command(name="gui", aliases=["player", "플레이어"])
+    async def bring_gui(self, ctx):
+        """플레이어 GUI를 채팅 맨 아래로 가져오기"""
+        try:
+            # 음성 채널 확인
+            if not ctx.author.voice:
+                await ctx.reply("❌ 음성 채널에 먼저 들어가주세요!")
+                return
+            
+            voice_channel = ctx.author.voice.channel
+            
+            # 서버 번호 찾기
+            server_num = server_check(self, voice_channel)
+            if server_num is None:
+                await ctx.reply("❌ 봇이 음성 채널에 연결되어 있지 않습니다!")
+                return
+            
+            # UI가 존재하는지 확인
+            if server_num not in self.ui_manager.server_uis:
+                await ctx.reply("❌ 현재 재생 중인 음악이 없습니다!")
+                return
+            
+            # UI를 채팅 맨 아래로 가져오기
+            ui, message = await self.ui_manager.bring_ui_to_bottom(self.bot, server_num, ctx)
+            
+            if ui and message:
+                await ctx.reply("✅ 플레이어 GUI를 채팅 맨 아래로 가져왔습니다!", delete_after=3)
+            else:
+                await ctx.reply("❌ GUI를 가져오는 중 오류가 발생했습니다!")
+                
+        except Exception as e:
+            print(f"Bring GUI error: {e}")
+            import traceback
+            traceback.print_exc()
+            await ctx.reply("❌ 오류가 발생했습니다!")
+
+    @commands.command(name="test")
+    async def test_seek(self, ctx, url):
+        """간단한 seek 테스트 명령어"""
+        try:
+            # 음성 채널 연결 확인
+            if not ctx.author.voice:
+                await ctx.send("음성 채널에 먼저 들어가주세요!")
+                return
+            
+            voice_channel = ctx.author.voice.channel
+            voice_client = ctx.voice_client
+            
+            # 봇이 음성 채널에 없으면 연결
+            if not voice_client:
+                voice_client = await voice_channel.connect()
+                print(f"Connected to voice channel: {voice_channel.name}")
+            
+            # URL에서 오디오 정보 추출
+            ydl_opts = {
+                'format': 'bestaudio/best',
+                'noplaylist': True,
+                'skip_download': True,
+            }
+            
+            with YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                title = info.get('title', 'Unknown')
+                duration = info.get('duration', 0)
+                audio_url = info.get('url')
+            
+            print(f"Test - Title: {title}")
+            print(f"Test - Duration: {duration} seconds")
+            print(f"Test - Audio URL: {audio_url}")
+            
+            # 첫 번째 재생 (0초부터 시작)
+            print("Test - Starting initial playback...")
+            initial_track = discord.FFmpegPCMAudio(audio_url, **ffmpeg_options, executable=ffmpeg_location)
+            voice_client.play(initial_track)
+            
+            await ctx.send(f"🎵 **{title}** 재생 시작! 5초 후 30초 위치로 이동합니다...")
+            
+            # 5초 대기
+            print("Test - Waiting 5 seconds...")
+            await asyncio.sleep(5)
+            
+            # 30초 위치로 seek
+            print("Test - Seeking to 30 seconds...")
+            seek_ffmpeg_options = {
+                'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -ss 30',
+                'options': '-vn'
+            }
+            
+            seek_track = discord.FFmpegPCMAudio(audio_url, **seek_ffmpeg_options, executable=ffmpeg_location)
+            
+            # 기존 트랙 중지 후 새 트랙 재생
+            voice_client.stop()
+            await asyncio.sleep(1)  # stop 완료 대기
+            
+            voice_client.play(seek_track, after=lambda e: print(f"Test seek track ended: {e}"))
+            
+            await ctx.send("⏩ **30초 위치로 이동 완료!**")
+            print("Test - Seek completed!")
+            
+        except Exception as e:
+            print(f"Test command error: {e}")
+            import traceback
+            traceback.print_exc()
+            await ctx.send(f"테스트 중 오류가 발생했습니다: {str(e)}")
 
     ###########################################
     ###########################################
