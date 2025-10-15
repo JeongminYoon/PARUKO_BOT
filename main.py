@@ -32,10 +32,14 @@ async def main():
 
     
 
-    for filename in os.listdir('./cogs'):
-        if'.py'in filename:
-            filename = filename.replace('.py','')
-            await bot.load_extension(f"cogs.{filename}")
+    # 특정 Cog 파일들만 로드
+    cog_files = ['DJ', 'ringing', 'help']
+    for cog_name in cog_files:
+        try:
+            await bot.load_extension(f"cogs.{cog_name}")
+            print(f"✅ {cog_name} 확장 로드 성공")
+        except Exception as e:
+            print(f"❌ {cog_name} 확장 로드 실패: {e}")
 
     # 전역 변수로 현재 재생 중인 음악 정보 저장
     current_music = None
