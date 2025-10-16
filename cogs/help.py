@@ -19,7 +19,7 @@ class help(commands.Cog):
         embed.add_field(name=":bell: 파루코 호출 / 지정된 채널로 벨소리\n", value="!ringing (음성 채널 멘션)", inline=False)
         
 
-        await ctx.send(embed=embed)
+        await ctx.reply(embed=embed)
 
     @discord.app_commands.command(name="help", description="파루코 봇의 명령어 목록을 보여줍니다")
     async def slash_help(self, interaction: discord.Interaction):
@@ -28,7 +28,7 @@ class help(commands.Cog):
         embed.add_field(name=":musical_note: 레이스 음악", value="***음악 재생***\n!play, /play (유튜브 링크 또는 빠른 번호)\n\n***빠른 번호 목록***\n!quicknumber, /quicknumber \n\n***다음 레이스로***\n!skip, /skip \n\n***휴식 시간***\n!pause, /pause\n\n***레이스 재개***\n!resume, /resume\n\n***레이스 대기열***\n!queue, /queue (페이지 번호)\n\n***채널 떠나기***\n!leave, /leave \n\n***레이스에서 제외***\n!delete, /delete (대기열 번호)\n\n***현재 레이스 중***\n!nowplaying, /nowplaying \n" ,inline=False)
         embed.add_field(name=":bell: 파루코 호출 / 지정된 채널로 벨소리\n", value="!ringing (음성 채널 멘션)", inline=False)
         
-        await interaction.response.send_message(embed=embed)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(help(bot))

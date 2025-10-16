@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 import discord
 import asyncio
 import time
@@ -47,32 +47,31 @@ class FakeCtx:
     def voice_client(self, value):
         self._voice_client = value
         
-    async def reply(self, message, delete_after=None):
-        if delete_after:
-            await self.interaction.followup.send(message, ephemeral=True, delete_after=delete_after)
+    async def reply(self, message=None, embed=None, delete_after=None, ephemeral=True):
+        if embed:
+            if delete_after:
+                await self.interaction.followup.send(embed=embed, ephemeral=ephemeral, delete_after=delete_after)
+            else:
+                await self.interaction.followup.send(embed=embed, ephemeral=ephemeral)
         else:
-            await self.interaction.followup.send(message, ephemeral=True)
+            if delete_after:
+                await self.interaction.followup.send(message, ephemeral=ephemeral, delete_after=delete_after)
+            else:
+                await self.interaction.followup.send(message, ephemeral=ephemeral)
             
-    async def send(self, content=None, embed=None, view=None, file=None):
-        try:
-            if embed and view and file:
-                return await self.interaction.followup.send(embed=embed, view=view, file=file)
-            elif embed and view:
-                return await self.interaction.followup.send(embed=embed, view=view)
-            elif embed:
-                return await self.interaction.followup.send(embed=embed)
-            else:
-                return await self.interaction.followup.send(content)
-        except discord.NotFound:
-            # Webhook이 만료된 경우 채널에 직접 전송
-            if embed and view and file:
-                return await self.channel.send(embed=embed, view=view, file=file)
-            elif embed and view:
-                return await self.channel.send(embed=embed, view=view)
-            elif embed:
-                return await self.channel.send(embed=embed)
-            else:
-                return await self.channel.send(content)
+    async def send(self, content=None, embed=None, view=None, file=None, ephemeral=False):
+        if embed and view and file:
+             await self.interaction.followup.send(embed=embed, view=view, file=file, ephemeral=ephemeral)
+        elif embed and view:
+             await self.interaction.followup.send(embed=embed, view=view, ephemeral=ephemeral)
+        elif embed:
+             await self.interaction.followup.send(embed=embed, ephemeral=ephemeral)
+        else:
+             await self.interaction.followup.send(content, ephemeral=ephemeral)
                 
     def __getattr__(self, name):
         return getattr(self.interaction, name)
+
+async def setup(bot):
+    """Libs 모듈을 위한 setup 함수 (Cog가 아니므로 빈 함수)"""
+    pass

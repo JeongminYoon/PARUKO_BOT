@@ -23,16 +23,12 @@ class MusicUIManager:
     async def get_or_create_ui(self, bot, server_num, voice_client, track_info, ctx):
 
         """UI를 가져오거나 새로 생성"""
-        print(f"DEBUG: get_or_create_ui called for server {server_num}")
-        print(f"DEBUG: track_info = {track_info}")
 
         # 빈 큐에서 새 음악으로 전환된 경우인지 확인
         was_empty_to_new = False
         if server_num in self.server_uis:
             old_ui = self.server_uis[server_num]
             was_empty_to_new = old_ui.track_info.get('is_empty', False) and not track_info.get('is_empty', False)
-            print(f"DEBUG: was_empty_to_new = {was_empty_to_new}")
-            print(f"DEBUG: old_ui.track_info = {old_ui.track_info}")
             
             if was_empty_to_new:
                 # 빈 큐 상태에서 새로운 음악을 재생하는 경우 - 기존 메시지 삭제 후 새로 생성
@@ -61,6 +57,10 @@ class MusicUIManager:
                 ui.voice_client = voice_client
                 ui.start_time = time.time()
 
+                # 기존 업데이트 태스크가 있으면 중지
+                if ui.update_task and not ui.update_task.done():
+                    ui.update_task.cancel()
+
                 # 메시지가 있으면 업데이트
                 if server_num in self.server_messages and self.server_messages[server_num]:
                     try:
@@ -74,11 +74,8 @@ class MusicUIManager:
                     pass
 
         # 새 UI 생성 및 전송
-
         ui, message = await bot.get_cog('DJ').create_and_send_music_ui(
-
             bot, server_num, voice_client, track_info, ctx
-
         )
 
         
@@ -325,7 +322,29 @@ class MusicPlayerView(discord.ui.View):
 
         return f"{minutes}:{seconds:02d}"
 
-    
+    def extract_video_id(self, url):
+        """YouTube URL에서 비디오 ID 추출"""
+        
+        if not url:
+            return None
+        
+        
+        # youtube.com/watch?v= 형식
+        if 'youtube.com/watch?v=' in url:
+            video_id = url.split('v=')[1].split('&')[0].split('?')[0]
+            return video_id
+        
+        # youtu.be/ 형식
+        elif 'youtu.be/' in url:
+            video_id = url.split('youtu.be/')[1].split('?')[0].split('&')[0]
+            return video_id
+        
+        # youtube.com/embed/ 형식
+        elif 'youtube.com/embed/' in url:
+            video_id = url.split('embed/')[1].split('?')[0].split('&')[0]
+            return video_id
+        
+        return None
 
     def create_music_embed(self):
 
@@ -536,12 +555,19 @@ class MusicPlayerView(discord.ui.View):
         
 
         # 썸네일 이미지를 메인 이미지로 설정 (유튜브 썸네일) - 맨 아래에 배치
-
-        if 'youtube.com' in self.track_info.get('url', '') or 'youtu.be' in self.track_info.get('url', ''):
-
-            video_id = self.track_info.get('url', '').split('v=')[-1].split('&')[0] if 'v=' in self.track_info.get('url', '') else self.track_info.get('url', '').split('/')[-1]
-
-            embed.set_image(url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg")
+        url_to_check = self.track_info.get('url', '') or self.track_info.get('original_url', '')
+        
+        if 'youtube.com' in url_to_check or 'youtu.be' in url_to_check:
+            video_id = self.extract_video_id(url_to_check)
+            if video_id and len(video_id) == 11:  # YouTube 비디오 ID는 11자리
+                thumbnail_url = f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg"
+                embed.set_image(url=thumbnail_url)
+            else:
+                # 비디오 ID 추출 실패 시 기본 이미지 사용
+                embed.set_image(url="attachment://default_player.png")
+        else:
+            # YouTube가 아닌 경우 기본 이미지 사용
+            embed.set_image(url="attachment://default_player.png")
 
         
 
@@ -670,53 +696,19 @@ class MusicPlayerView(discord.ui.View):
     
 
     async def update_progress(self):
-
         """프로그레스 바 업데이트"""
-
-        if not self.message:
-
+        
+        if not self.message or self.is_updating:
             return
-
-        if self.is_updating:
-
-            return
-
-            
-
+        
         try:
-
             self.is_updating = True
-
             embed = self.create_music_embed()
-
             await self.message.edit(embed=embed, view=self)
-
-        except discord.NotFound:
-
-            print("Message not found, stopping updates")
-
-            self.is_updating = False
-
-            return
-
-        except discord.Forbidden:
-
-            print("No permission to edit message, stopping updates")
-
-            self.is_updating = False
-
-            return
-
-        except Exception as e:
-
-            print(f"Progress update error: {e}")
-
-            import traceback
-
-            traceback.print_exc()
-
+        except (discord.NotFound, discord.Forbidden):
+            # 메시지가 삭제되었거나 권한이 없으면 업데이트 중지
+            pass
         finally:
-
             self.is_updating = False
 
     
