@@ -10,6 +10,10 @@ import glob
 from mutagen.mp3 import MP3
 import threading
 import os
+import re
+import json
+import requests
+import xml.etree.ElementTree as ET
 from .Libs import FakeCtx, server_check, leave
 from .GUI import MusicUIManager, MusicPlayerView
 
@@ -66,15 +70,15 @@ class Player:
         self.repeat_mode = False
         self.channel = None
 
-    def queue_insert(self, y_link, y_title, y_duration, o_url, o_author, insert_num):
+    def queue_insert(self, y_link, y_title, y_duration, o_url, o_author, insert_num, original_track_info=None, track_info=None):
         """큐에 음악을 특정 위치에 삽입"""
-        q_dic = self._create_queue_item(y_link, y_title, y_duration, o_url, o_author)
+        q_dic = self._create_queue_item(y_link, y_title, y_duration, o_url, o_author, original_track_info, track_info)
         self.q_list.insert(insert_num, q_dic)
         return self.q_list
 
-    def queue_set(self, y_link, y_title, y_duration, o_url, o_author):
+    def queue_set(self, y_link, y_title, y_duration, o_url, o_author, original_track_info=None, track_info=None):
         """큐에 음악을 추가"""
-        q_dic = self._create_queue_item(y_link, y_title, y_duration, o_url, o_author)
+        q_dic = self._create_queue_item(y_link, y_title, y_duration, o_url, o_author, original_track_info, track_info)
         self.q_list.append(q_dic)
         return self.q_list
     
@@ -83,15 +87,24 @@ class Player:
         self.channel = channel
         return self.channel
 
-    def _create_queue_item(self, y_link, y_title, y_duration, o_url, o_author):
+    def _create_queue_item(self, y_link, y_title, y_duration, o_url, o_author, original_track_info=None, track_info=None):
         """큐 아이템 딕셔너리 생성"""
-        return {
+        item = {
             'link': y_link,
             'title': y_title,
             'duration': datetime.timedelta(seconds=y_duration) if y_duration else datetime.timedelta(seconds=0),
             'url': o_url,
             'author': o_author
         }
+        
+        # 자막 데이터가 있다면 포함
+        if original_track_info and original_track_info.get('subtitle_data'):
+            item['original_track_info'] = original_track_info
+        elif track_info and track_info.get('subtitle_data'):
+            # original_track_info에 자막 데이터가 없으면 track_info에서 가져오기
+            item['original_track_info'] = track_info
+            
+        return item
 
 # ============================================================================
 # Main DJ Cog
@@ -370,7 +383,28 @@ class DJ(commands.Cog):
         url = self._process_quick_url(url)
         
         try:
-            q_info = self.DL.extract_info(url, download=False)
+            # 먼저 다국어 제목 추출 시도
+            q_info = self._try_multilingual_extraction(url)
+            
+            # 다국어 추출이 실패하면 기본 방법 사용
+            if not q_info:
+                q_info = self.DL.extract_info(url, download=False)
+            
+            # 자막 정보 추출
+            subtitle_data, subtitle_lang, subtitle_type = self._extract_subtitles_with_priority(url)
+            
+            # 자막 정보를 q_info에 추가
+            if subtitle_data:
+                q_info['subtitle_data'] = {
+                    'subtitles': subtitle_data,
+                    'language': subtitle_lang,
+                    'type': subtitle_type,
+                    'current_subtitle': None
+                }
+                print(f"자막 로드 완료: {subtitle_lang} ({subtitle_type}), {len(subtitle_data)}개 구간")
+            else:
+                q_info['subtitle_data'] = None
+                
         except Exception:
             if hasattr(ctx, 'interaction') and ctx.interaction is not None:
                 await ctx.send("ERROR: URL invalid", ephemeral=True)
@@ -393,20 +427,465 @@ class DJ(commands.Cog):
                 return quick_url
         return url
 
+    def _extract_yt_initial_data(self, url):
+        """웹페이지에서 ytInitialData 추출"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            # ytInitialData 패턴 찾기
+            pattern = r'var ytInitialData = ({.*?});'
+            match = re.search(pattern, response.text)
+            
+            if match:
+                try:
+                    yt_data = json.loads(match.group(1))
+                    return yt_data
+                except json.JSONDecodeError:
+                    print("Failed to parse ytInitialData JSON")
+                    return None
+            
+            # 다른 패턴도 시도
+            pattern2 = r'window\["ytInitialData"\] = ({.*?});'
+            match2 = re.search(pattern2, response.text)
+            
+            if match2:
+                try:
+                    yt_data = json.loads(match2.group(1))
+                    return yt_data
+                except json.JSONDecodeError:
+                    print("Failed to parse ytInitialData JSON (pattern2)")
+                    return None
+                    
+        except Exception as e:
+            print(f"Error extracting ytInitialData: {e}")
+            return None
+        
+        return None
+
+    def _extract_multilingual_title_from_ytdata(self, yt_data):
+        """ytInitialData에서 다국어 제목 추출"""
+        try:
+            if not yt_data:
+                return None
+            
+            # 경로 1: playerOverlays.playerOverlayRenderer.videoDetails
+            try:
+                player_overlays = yt_data.get('playerOverlays', {})
+                if player_overlays:
+                    player_overlay_renderer = player_overlays.get('playerOverlayRenderer', {})
+                    if player_overlay_renderer:
+                        video_details = player_overlay_renderer.get('videoDetails', {})
+                        if video_details:
+                            title = video_details.get('title')
+                            if title:
+                                return title
+            except Exception:
+                pass
+            
+            # 경로 2: engagementPanels에서 찾기
+            try:
+                engagement_panels = yt_data.get('engagementPanels', [])
+                for panel in engagement_panels:
+                    if isinstance(panel, dict):
+                        panel_identifier = panel.get('panelIdentifier', '')
+                        if 'structured-description' in panel_identifier:
+                            section_list = panel.get('engagementPanelSectionListRenderer', {})
+                            content = section_list.get('content', {})
+                            structured_content = content.get('structuredDescriptionContentRenderer', {})
+                            items = structured_content.get('items', [])
+                            
+                            for item in items:
+                                if isinstance(item, dict) and 'videoDescriptionHeaderRenderer' in item:
+                                    title_info = item['videoDescriptionHeaderRenderer']
+                                    title = title_info.get('title', {}).get('runs', [{}])[0].get('text')
+                                    if title:
+                                        return title
+            except Exception:
+                pass
+            
+            # 경로 3: contents.twoColumnWatchNextResults에서 찾기
+            try:
+                contents = yt_data.get('contents', {})
+                two_column = contents.get('twoColumnWatchNextResults', {})
+                results = two_column.get('results', {})
+                results_contents = results.get('results', {})
+                contents_list = results_contents.get('contents', [])
+                
+                for content in contents_list:
+                    if isinstance(content, dict) and 'videoPrimaryInfoRenderer' in content:
+                        video_info = content['videoPrimaryInfoRenderer']
+                        title_info = video_info.get('title', {})
+                        runs = title_info.get('runs', [])
+                        if runs and len(runs) > 0:
+                            title = runs[0].get('text')
+                            if title:
+                                return title
+            except Exception:
+                pass
+                
+        except Exception as e:
+            print(f"Error extracting multilingual title: {e}")
+            return None
+        
+        return None
+
+    def _try_multilingual_extraction(self, url):
+        """다국어 제목 추출 시도"""
+        try:
+            # ytInitialData 추출
+            yt_data = self._extract_yt_initial_data(url)
+            if not yt_data:
+                return None
+            
+            # 다국어 제목 추출
+            multilingual_title = self._extract_multilingual_title_from_ytdata(yt_data)
+            if multilingual_title:
+                # 기본 정보도 함께 가져오기
+                basic_info = self.DL.extract_info(url, download=False)
+                if basic_info:
+                    # 제목만 교체
+                    basic_info['title'] = multilingual_title
+                    return basic_info
+            
+        except Exception as e:
+            print(f"Multilingual extraction failed: {e}")
+            return None
+        
+        return None
+
+    def _extract_subtitles_with_priority(self, url):
+        """자막 우선순위에 따라 추출 (한국어 > 영어 > 일본어, 수동 자막만)"""
+        try:
+            # 자막 정보만 추출하는 옵션 (플레이리스트 예외처리 포함)
+            subtitle_options = {
+                'skip_download': True,
+                'writesubtitles': False,
+                'writeautomaticsub': False,
+                'extract_flat': False,
+                'no_warnings': True,
+                'noplaylist': True,  # 플레이리스트에서 첫 번째 영상만 처리
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                    'Accept-Language': 'ko-KR,ko;q=0.9,en;q=0.8'
+                }
+            }
+            
+            with YoutubeDL(subtitle_options) as ydl:
+                info = ydl.extract_info(url, download=False)
+                
+                # 수동 자막만 확인 (자동생성/자동번역 제외)
+                subtitles = info.get('subtitles', {})
+                automatic_captions = info.get('automatic_captions', {})
+                
+                # 우선순위 언어 순서: 한국어 > 영어 > 일본어
+                priority_langs = ['ko', 'en', 'ja']
+                
+                for lang in priority_langs:
+                    # 수동 자막 확인
+                    if lang in subtitles and subtitles[lang]:
+                        subtitle_urls = subtitles[lang]
+                        # 가장 좋은 품질의 자막 선택
+                        best_subtitle = subtitle_urls[0] if subtitle_urls else None
+                        
+                        if best_subtitle:
+                            subtitle_data = self._download_and_parse_subtitle(best_subtitle['url'])
+                            if subtitle_data:
+                                return subtitle_data, lang, 'manual'
+                
+                return None, None, None
+                
+        except Exception as e:
+            print(f"자막 추출 실패: {e}")
+            return None, None, None
+
+    def _download_and_parse_subtitle(self, subtitle_url):
+        """자막 URL에서 자막 다운로드 및 파싱"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+            }
+            
+            response = requests.get(subtitle_url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            subtitle_content = response.text
+            
+            # VTT 형식 파싱
+            if 'WEBVTT' in subtitle_content:
+                return self._parse_vtt_subtitle(subtitle_content)
+            # SRT 형식 파싱
+            elif '-->' in subtitle_content and not '<tt' in subtitle_content:
+                return self._parse_srt_subtitle(subtitle_content)
+            # TTML 형식 파싱
+            elif '<tt' in subtitle_content or '<ttml' in subtitle_content:
+                return self._parse_ttml_subtitle(subtitle_content)
+            # JSON 형식 파싱 (일부 자막이 JSON으로 제공됨)
+            elif subtitle_content.strip().startswith('{') or subtitle_content.strip().startswith('['):
+                return self._parse_json_subtitle(subtitle_content)
+            else:
+                print(f"지원하지 않는 자막 형식. Content-Type: {response.headers.get('content-type', 'unknown')}")
+                print(f"자막 URL: {subtitle_url}")
+                return None
+                
+        except Exception as e:
+            print(f"자막 다운로드/파싱 실패: {e}")
+            return None
+
+    def _parse_json_subtitle(self, content):
+        """JSON 형식 자막 파싱"""
+        try:
+            data = json.loads(content)
+            subtitles = []
+            
+            # 다양한 JSON 구조 지원
+            if isinstance(data, list):
+                # 배열 형태
+                for item in data:
+                    if isinstance(item, dict) and 'start' in item and 'end' in item:
+                        subtitles.append({
+                            'start': float(item['start']),
+                            'end': float(item['end']),
+                            'text': item.get('text', item.get('content', ''))
+                        })
+            elif isinstance(data, dict):
+                # 객체 형태
+                if 'events' in data:
+                    # YouTube 자막 JSON 형식
+                    for event in data['events']:
+                        if 'segs' in event and 'tStartMs' in event:
+                            start_time = float(event['tStartMs']) / 1000
+                            end_time = start_time + float(event.get('dDurationMs', 0)) / 1000
+                            text = ''.join([seg.get('utf8', '') for seg in event['segs']])
+                            
+                            if text.strip():
+                                subtitles.append({
+                                    'start': start_time,
+                                    'end': end_time,
+                                    'text': text.strip()
+                                })
+                elif 'captions' in data:
+                    # 다른 JSON 형식
+                    for caption in data['captions']:
+                        subtitles.append({
+                            'start': float(caption.get('start', 0)),
+                            'end': float(caption.get('end', 0)),
+                            'text': caption.get('text', '')
+                        })
+            
+            return subtitles
+            
+        except Exception as e:
+            print(f"JSON 자막 파싱 오류: {e}")
+            return None
+
+    def _parse_vtt_subtitle(self, content):
+        """VTT 형식 자막 파싱"""
+        subtitles = []
+        lines = content.split('\n')
+        
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            
+            # 시간 정보가 있는 줄 찾기
+            if '-->' in line:
+                try:
+                    # 시간 파싱 (00:00:00.000 --> 00:00:00.000)
+                    time_parts = line.split(' --> ')
+                    start_time = self._parse_vtt_time(time_parts[0])
+                    end_time = self._parse_vtt_time(time_parts[1])
+                    
+                    # 다음 줄부터 텍스트 수집
+                    text_lines = []
+                    i += 1
+                    while i < len(lines) and lines[i].strip() and not '-->' in lines[i]:
+                        text_lines.append(lines[i].strip())
+                        i += 1
+                    
+                    if text_lines:
+                        text = ' '.join(text_lines)
+                        # HTML 태그 제거
+                        text = re.sub(r'<[^>]+>', '', text)
+                        
+                        subtitles.append({
+                            'start': start_time,
+                            'end': end_time,
+                            'text': text.strip()
+                        })
+                    
+                    continue
+                except Exception as e:
+                    print(f"VTT 시간 파싱 오류: {e}")
+            
+            i += 1
+        
+        return subtitles
+
+    def _parse_srt_subtitle(self, content):
+        """SRT 형식 자막 파싱"""
+        subtitles = []
+        blocks = content.split('\n\n')
+        
+        for block in blocks:
+            lines = block.strip().split('\n')
+            if len(lines) >= 3:
+                try:
+                    # 시간 정보 파싱 (00:00:00,000 --> 00:00:00,000)
+                    time_line = lines[1]
+                    time_parts = time_line.split(' --> ')
+                    start_time = self._parse_srt_time(time_parts[0])
+                    end_time = self._parse_srt_time(time_parts[1])
+                    
+                    # 텍스트 수집
+                    text_lines = lines[2:]
+                    text = ' '.join(text_lines)
+                    
+                    subtitles.append({
+                        'start': start_time,
+                        'end': end_time,
+                        'text': text.strip()
+                    })
+                except Exception as e:
+                    print(f"SRT 파싱 오류: {e}")
+        
+        return subtitles
+
+    def _parse_ttml_subtitle(self, content):
+        """TTML 형식 자막 파싱"""
+        subtitles = []
+        try:
+            root = ET.fromstring(content)
+            
+            # TTML 네임스페이스 처리
+            namespaces = {
+                'ttml': 'http://www.w3.org/ns/ttml',
+                'tts': 'http://www.w3.org/ns/ttml#styling'
+            }
+            
+            # p 태그들 찾기
+            p_elements = root.findall('.//p', namespaces)
+            
+            for p in p_elements:
+                try:
+                    begin = p.get('begin')
+                    end = p.get('end')
+                    
+                    if begin and end:
+                        start_time = self._parse_ttml_time(begin)
+                        end_time = self._parse_ttml_time(end)
+                        
+                        # 텍스트 추출
+                        text = ''.join(p.itertext()).strip()
+                        
+                        subtitles.append({
+                            'start': start_time,
+                            'end': end_time,
+                            'text': text
+                        })
+                except Exception as e:
+                    print(f"TTML p 태그 파싱 오류: {e}")
+                    
+        except Exception as e:
+            print(f"TTML 파싱 오류: {e}")
+        
+        return subtitles
+
+    def _parse_vtt_time(self, time_str):
+        """VTT 시간 형식을 초로 변환 (00:00:00.000)"""
+        try:
+            # 밀리초 제거
+            time_str = time_str.replace(',', '.')
+            parts = time_str.split(':')
+            
+            if len(parts) == 3:
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = float(parts[2])
+                return hours * 3600 + minutes * 60 + seconds
+            elif len(parts) == 2:
+                minutes = int(parts[0])
+                seconds = float(parts[1])
+                return minutes * 60 + seconds
+            else:
+                return float(parts[0])
+        except Exception:
+            return 0.0
+
+    def _parse_srt_time(self, time_str):
+        """SRT 시간 형식을 초로 변환 (00:00:00,000)"""
+        try:
+            # 밀리초를 초로 변환
+            time_str = time_str.replace(',', '.')
+            parts = time_str.split(':')
+            
+            if len(parts) == 3:
+                hours = int(parts[0])
+                minutes = int(parts[1])
+                seconds = float(parts[2])
+                return hours * 3600 + minutes * 60 + seconds
+            elif len(parts) == 2:
+                minutes = int(parts[0])
+                seconds = float(parts[1])
+                return minutes * 60 + seconds
+            else:
+                return float(parts[0])
+        except Exception:
+            return 0.0
+
+    def _parse_ttml_time(self, time_str):
+        """TTML 시간 형식을 초로 변환"""
+        try:
+            if ':' in time_str:
+                parts = time_str.split(':')
+                if len(parts) == 3:
+                    hours = int(parts[0])
+                    minutes = int(parts[1])
+                    seconds = float(parts[2])
+                    return hours * 3600 + minutes * 60 + seconds
+                elif len(parts) == 2:
+                    minutes = int(parts[0])
+                    seconds = float(parts[1])
+                    return minutes * 60 + seconds
+            else:
+                # 초 단위
+                return float(time_str)
+        except Exception:
+            return 0.0
+
+    def _find_current_subtitle(self, current_time, subtitles):
+        """현재 시간에 맞는 자막 찾기"""
+        if not subtitles:
+            return None
+        
+        for subtitle in subtitles:
+            start_time = subtitle['start']
+            end_time = subtitle['end']
+            if start_time <= current_time <= end_time:
+                return subtitle
+        
+        return None
+
     async def _manage_queue(self, ctx, server_num, track_info, insert_num):
         """큐 관리"""
         q_info = track_info['info']
         author = track_info['author']
         
         if len(self.server[server_num].q_list) == 0:
-            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author)
+            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author, q_info, track_info)
             queue_list = self.server[server_num].q_list
         elif insert_num == 0:
-            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author)
+            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author, q_info, track_info)
             queue_list = self.server[server_num].q_list
             q_num = len(queue_list) - 1
         else:
-            self.server[server_num].queue_insert(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author, insert_num)
+            self.server[server_num].queue_insert(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author, insert_num, q_info, track_info)
             queue_list = self.server[server_num].q_list
             q_num = insert_num
 
@@ -464,6 +943,11 @@ class DJ(commands.Cog):
             track_data['author']
         )
         
+        # 자막 데이터가 있다면 추가 (큐에서 가져온 원본 정보에서)
+        original_track_info = track_data.get('original_track_info')
+        if original_track_info and original_track_info.get('subtitle_data'):
+            track_info['subtitle_data'] = original_track_info['subtitle_data']
+        
         result = await self.ui_manager.get_or_create_ui(
             self.bot, server_num, voice_client, track_info, ctx
         )
@@ -502,19 +986,24 @@ class DJ(commands.Cog):
                     is_seeking = await self._check_seek_status(server_num)
                     
                     if not is_seeking:
-                        # 마지막 노래인 경우 큐에서 제거
-                        if len(queue_list) == 1:
-                            queue_list.pop(0)
-                            await self._handle_empty_queue(ctx, server_num)
-                            break
-                        
-                        await self._handle_queue_advancement(server_num, queue_list)
-                        
-                        if len(queue_list) == 0:
-                            await self._handle_empty_queue(ctx, server_num)
-                            break
-                        
-                        await self._play_next_track(ctx, server_num, queue_list)
+                        # 반복 모드가 켜져있고 큐에 노래가 있으면 계속 재생
+                        if self.server[server_num].repeat_mode and len(queue_list) > 0:
+                            await self._handle_queue_advancement(server_num, queue_list)
+                            await self._play_next_track(ctx, server_num, queue_list)
+                        else:
+                            # 반복 모드가 꺼져있거나 큐가 비어있으면
+                            if len(queue_list) == 1:
+                                queue_list.pop(0)
+                                await self._handle_empty_queue(ctx, server_num)
+                                break
+                            
+                            await self._handle_queue_advancement(server_num, queue_list)
+                            
+                            if len(queue_list) == 0:
+                                await self._handle_empty_queue(ctx, server_num)
+                                break
+                            
+                            await self._play_next_track(ctx, server_num, queue_list)
                     else:
                         await asyncio.sleep(0.1)
                         continue
@@ -540,11 +1029,12 @@ class DJ(commands.Cog):
     async def _handle_queue_advancement(self, server_num, queue_list):
         """큐 진행 처리"""
         if self.server[server_num].repeat_mode and len(queue_list) > 0:
+            # 반복 모드: 현재 곡을 큐 맨 뒤로 이동
             current_song = queue_list.pop(0)
             queue_list.append(current_song)
         else:
-            # 마지막 노래인 경우 큐에서 제거하지 않음 (재생 완료 후 제거)
-            if len(queue_list) > 1:
+            # 일반 모드: 첫 번째 곡 제거
+            if len(queue_list) > 0:
                 queue_list.pop(0)
 
     async def _handle_empty_queue(self, ctx, server_num):
@@ -579,9 +1069,6 @@ class DJ(commands.Cog):
             if not voice_client.is_connected():
                 return
             
-            # 더미 오디오로 활성화
-            await self._play_dummy_audio(voice_client)
-            
             voice_client.play(track)
             self.server[server_num].np_time = time.time()
             
@@ -603,15 +1090,6 @@ class DJ(commands.Cog):
         except Exception as e:
             print(f"Error playing next track: {e}")
 
-    async def _play_dummy_audio(self, voice_client):
-        """더미 오디오 재생"""
-        try:
-            dummy_audio = discord.FFmpegPCMAudio("silence.mp3", executable=MusicBotConfig.FFMPEG_LOCATION)
-            voice_client.play(dummy_audio)
-            await asyncio.sleep(0.02)
-            voice_client.stop()
-        except Exception as e:
-            print(f"Dummy audio play failed: {e}")
 
     async def _update_music_ui(self, ctx, server_num, voice_client, track_info):
         """음악 UI 업데이트"""

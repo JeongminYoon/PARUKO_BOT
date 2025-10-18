@@ -32,13 +32,11 @@ class MusicUIManager:
             
             if was_empty_to_new:
                 # 빈 큐 상태에서 새로운 음악을 재생하는 경우 - 기존 메시지 삭제 후 새로 생성
-                print(f"Empty queue to new music transition detected for server {server_num}")
                 
                 # 기존 메시지 삭제 (첨부 파일과 응답 상태 정리를 위해)
                 if server_num in self.server_messages and self.server_messages[server_num]:
                     try:
                         await self.server_messages[server_num].delete()
-                        print(f"Deleted old empty queue message for server {server_num}")
                     except Exception as e:
                         print(f"Failed to delete old message: {e}")
                 
@@ -52,6 +50,7 @@ class MusicUIManager:
                     del self.server_messages[server_num]
             else:
                 # 일반적인 UI 업데이트
+                print(f"[UI DEBUG] Server {server_num} has existing UI, updating it")
                 ui = self.server_uis[server_num]
                 ui.track_info = track_info
                 ui.voice_client = voice_client
@@ -64,16 +63,25 @@ class MusicUIManager:
                 # 메시지가 있으면 업데이트
                 if server_num in self.server_messages and self.server_messages[server_num]:
                     try:
+                        print(f"[UI DEBUG] Updating existing message for server {server_num}")
+                        print(f"[UI DEBUG] About to call ui.update_progress()")
                         await ui.update_progress()
+                        print(f"[UI DEBUG] ui.update_progress() completed")
                         return ui, self.server_messages[server_num], False  # 일반적인 업데이트
                     except (discord.NotFound, discord.Forbidden):
                         # 메시지가 삭제되었거나 권한이 없으면 새로 생성
+                        print(f"[UI DEBUG] Message not found or forbidden, will create new")
                         pass
                 else:
                     # 메시지가 없으면 새로 생성
+                    print(f"[UI DEBUG] No existing message, will create new")
                     pass
 
         # 새 UI 생성 및 전송
+        print("=" * 60)
+        print("CREATING NEW UI!")
+        print("=" * 60)
+        print(f"[UI DEBUG] No existing UI found for server {server_num}, creating new one")
         ui, message = await bot.get_cog('DJ').create_and_send_music_ui(
             bot, server_num, voice_client, track_info, ctx
         )
@@ -263,6 +271,14 @@ class MusicPlayerView(discord.ui.View):
         self.update_task = None
 
         self._seeking = False  # 시간 이동 중인지 표시
+        
+        # 자막 지연 보정 시간 (초) - 네트워크 지연으로 인한 자막 지연을 보정 ㄴㅇㅇ
+        self.subtitle_offset = 0.7  # 0.7초 앞당겨서 재생
+
+    def set_subtitle_offset(self, offset_seconds):
+        """자막 지연 보정 시간 설정"""
+        self.subtitle_offset = max(0, offset_seconds)  # 음수 방지
+        print(f"자막 지연 보정 시간 설정: {self.subtitle_offset}초")
 
         
 
@@ -322,12 +338,61 @@ class MusicPlayerView(discord.ui.View):
 
         return f"{minutes}:{seconds:02d}"
 
+    def _get_subtitle_change_times(self):
+        """자막 변경 시점 리스트 생성 (지연 보정 적용)"""
+        subtitle_data = self.track_info.get('subtitle_data')
+        if not subtitle_data or not subtitle_data.get('subtitles'):
+            return []
+        
+        change_times = []
+        for subtitle in subtitle_data['subtitles']:
+            # 자막 지연 보정 적용 (앞당겨서 재생)
+            start_time = max(0, subtitle['start'] - self.subtitle_offset)  # 음수 방지
+            end_time = max(0, subtitle['end'] - self.subtitle_offset)    # 음수 방지
+            
+            change_times.append(start_time)  # 자막 시작 시점
+            change_times.append(end_time)    # 자막 끝 시점
+        
+        return sorted(set(change_times))  # 중복 제거 후 정렬
+
+    def _get_next_subtitle_change_time(self, current_time):
+        """다음 자막 변경 시점 계산"""
+        change_times = self._get_subtitle_change_times()
+        
+        for change_time in change_times:
+            if change_time > current_time:
+                return change_time
+        
+        return None  # 더 이상 변경 시점이 없음
+
+    def _get_current_subtitle(self, current_time):
+        """현재 시간에 맞는 자막 찾기 (지연 보정 적용)"""
+        try:
+            subtitle_data = self.track_info.get('subtitle_data')
+            if not subtitle_data or not subtitle_data.get('subtitles'):
+                return None
+            
+            subtitles = subtitle_data['subtitles']
+            
+            # 현재 시간에 맞는 자막 찾기 (지연 보정 적용)
+            for subtitle in subtitles:
+                # 자막 지연 보정 적용 (앞당겨서 재생)
+                start_time = max(0, subtitle['start'] - self.subtitle_offset)  # 음수 방지
+                end_time = max(0, subtitle['end'] - self.subtitle_offset)      # 음수 방지
+                
+                if start_time <= current_time <= end_time:
+                    return subtitle
+            
+            return None
+        except Exception as e:
+            print(f"자막 찾기 오류: {e}")
+            return None
+
     def extract_video_id(self, url):
         """YouTube URL에서 비디오 ID 추출"""
         
         if not url:
             return None
-        
         
         # youtube.com/watch?v= 형식
         if 'youtube.com/watch?v=' in url:
@@ -347,9 +412,6 @@ class MusicPlayerView(discord.ui.View):
         return None
 
     def create_music_embed(self):
-
-        """음악 재생 정보가 포함된 임베드 생성"""
-
         # 빈 큐 상태 확인
 
         if self.track_info.get('is_empty', False):
@@ -551,6 +613,27 @@ class MusicPlayerView(discord.ui.View):
             inline=False
 
         )
+        
+        # 자막 표시 (프로그레스 바 아래)
+        current_subtitle = self._get_current_subtitle(current_time)
+        subtitle_data = self.track_info.get('subtitle_data')
+        
+        # 자막 데이터가 있으면 자막 영역 표시 (자막이 없어도 영역 유지)
+        if subtitle_data:
+            if current_subtitle:
+                # 자막 텍스트가 너무 길면 줄임
+                subtitle_text = current_subtitle['text']
+                if len(subtitle_text) > 200:
+                    subtitle_text = subtitle_text[:197] + "..."
+            else:
+                # 자막이 없으면 빈 텍스트
+                subtitle_text = ""
+            
+            embed.add_field(
+                name="",  # 제목 없음
+                value=f"```\n{subtitle_text}\n```",
+                inline=False
+            )
 
         
 
@@ -696,15 +779,29 @@ class MusicPlayerView(discord.ui.View):
     
 
     async def update_progress(self):
-        """프로그레스 바 업데이트"""
-        
-        if not self.message or self.is_updating:
-            return
-        
         try:
             self.is_updating = True
+            
+            # 현재 시간 계산
+            current_time = time.time() - self.start_time
+            
+            # 자막이 있는 경우 자막 변경 체크
+            subtitle_changed = False
+            if self.track_info.get('subtitle_data'):
+                current_subtitle = self._get_current_subtitle(current_time)
+                previous_subtitle = self.track_info.get('subtitle_data', {}).get('current_subtitle')
+                
+                # 자막이 변경되었는지 확인
+                if current_subtitle != previous_subtitle:
+                    subtitle_changed = True
+                    # 현재 자막 정보 업데이트
+                    if self.track_info.get('subtitle_data'):
+                        self.track_info['subtitle_data']['current_subtitle'] = current_subtitle
+            
+            # 자막이 변경되었거나 일정 시간마다 업데이트 (자막이 없어도 진행률은 업데이트)
             embed = self.create_music_embed()
             await self.message.edit(embed=embed, view=self)
+            
         except (discord.NotFound, discord.Forbidden):
             # 메시지가 삭제되었거나 권한이 없으면 업데이트 중지
             pass
@@ -1002,7 +1099,22 @@ class MusicPlayerView(discord.ui.View):
                 if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
 
                     update_count += 1
+                    current_time = time.time() - self.start_time
 
+                    # 다음 자막 변경 시점 계산
+                    next_change_time = self._get_next_subtitle_change_time(current_time)
+                    
+                    if next_change_time:
+                        # 자막 변경까지의 시간 계산
+                        time_until_change = next_change_time - current_time
+                        
+                        # 자막 변경 시점에 맞춰 업데이트 (1초 이내인 경우만)
+                        if time_until_change > 0 and time_until_change < 1.0:
+                            await self.update_progress()
+                            await asyncio.sleep(time_until_change)
+                            continue
+                    
+                    # 일반적인 업데이트
                     await self.update_progress()
 
                 await asyncio.sleep(1)  # 1초마다 업데이트
@@ -1281,15 +1393,15 @@ class MusicPlayerView(discord.ui.View):
 
         try:
 
-            if self.voice_client:
-
-                self.voice_client.stop()
-
-                await interaction.response.send_message("⏭️ 다음 곡으로 건너뛰기", ephemeral=True)
-
+            # DJ cog의 skip 명령어 로직을 직접 호출
+            dj_cog = self.bot.get_cog('DJ')
+            if dj_cog:
+                # FakeCtx 생성하여 skip 로직 실행
+                from .Libs import FakeCtx
+                ctx = FakeCtx(interaction)
+                await dj_cog.skip(ctx)
             else:
-
-                await interaction.response.send_message("재생할 음악이 없습니다.", ephemeral=True)
+                await interaction.response.send_message("DJ 기능을 찾을 수 없습니다.", ephemeral=True)
 
         except Exception as e:
 
