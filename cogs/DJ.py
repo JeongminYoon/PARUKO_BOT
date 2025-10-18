@@ -106,6 +106,7 @@ class DJ(commands.Cog):
         self.server = []
         self.ui_manager = MusicUIManager()
         self.entry = 0  # 입장음 비활성화
+        self.skip_in_progress = {}  # 서버별 스킵 진행 상태
 
     # ============================================================================
     # Event Handlers
@@ -492,6 +493,11 @@ class DJ(commands.Cog):
                     break
                 
                 if not voice_client.is_playing() and not voice_client.is_paused():
+                    # 스킵 진행 중인지 확인
+                    if self.skip_in_progress.get(server_num, False):
+                        await asyncio.sleep(0.1)
+                        continue
+                    
                     # seek 중인지 확인
                     is_seeking = await self._check_seek_status(server_num)
                     
@@ -587,13 +593,9 @@ class DJ(commands.Cog):
                 track_data['author'],
                 track_data.get('original_url', track_data['url'])
             )
-            await self._update_music_ui(ctx, server_num, voice_client, track_info)
 
-            # bring_ui_to_bottom 호출 제거 - 불필요한 새 메시지 생성 방지
-            # try:
-            #     await self.ui_manager.bring_ui_to_bottom(self.bot, server_num, ctx)
-            # except Exception as e:
-            #     print(f"GUI 이동 중 오류 발생: {e}")
+            await self.ui_manager.bring_ui_to_bottom(self.bot, server_num, ctx)
+            await self._update_music_ui(ctx, server_num, voice_client, track_info)
             
             if hasattr(self.bot, 'update_music_status'):
                 self.bot.update_music_status(track_data['title'])
@@ -710,6 +712,9 @@ class DJ(commands.Cog):
                 await ctx.reply("스킵할 레이스가 없어요!")
             return
         
+        # 스킵 진행 플래그 설정
+        self.skip_in_progress[server_num] = True
+        
         if hasattr(ctx, 'interaction') and ctx.interaction is not None:
             await ctx.send("다음 레이스로!", ephemeral=True)
         else:
@@ -755,6 +760,9 @@ class DJ(commands.Cog):
                     await ui.update_progress()
             except Exception as e:
                 print(f"Failed to update UI to empty state after skip: {e}")
+        
+        # 스킵 완료 후 플래그 해제
+        self.skip_in_progress[server_num] = False
 
     @commands.command(name="leave", aliases=["l", "L", "ㅣ"])
     async def leave(self, ctx):

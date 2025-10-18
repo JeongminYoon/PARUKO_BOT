@@ -49,10 +49,10 @@ async def main():
     async def presence():
         if current_music:
             # 음악 재생 중일 때
-            await bot.change_presence(activity=discord.Game(f"{current_music} 공연중!"))
+            await bot.change_presence(activity=discord.CustomActivity(name=f"{current_music} 공연중!"))
         else:
             # 음악 재생 안할 때
-            await bot.change_presence(activity=discord.Game(next(status_cycle)))
+            await bot.change_presence(activity=discord.CustomActivity(name=next(status_cycle)))
 
     # 음악 상태 업데이트 함수
     def update_music_status(music_title=None):
