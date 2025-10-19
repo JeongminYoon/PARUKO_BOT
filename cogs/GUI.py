@@ -5,6 +5,7 @@ import datetime
 import os
 from discord.ext import commands
 from .Libs import FakeCtx
+from .subtitle_service import subtitle_service
 
 
 
@@ -73,7 +74,7 @@ class MusicUIManager:
                     # 메시지가 없으면 새로 생성
                     pass
 
-        # 새 UI 생성 및 전송
+        # 새 UI 생성 및 전송 
         ui, message = await bot.get_cog('DJ').create_and_send_music_ui(
             bot, server_num, voice_client, track_info, ctx
         )
@@ -241,6 +242,8 @@ class MusicUIManager:
 
 
 class MusicPlayerView(discord.ui.View):
+    # 자막 싱크 조절 상수 (초 단위)
+    SUBTITLE_SYNC_OFFSET = -0.5  # Discord 딜레이 보정을 위해 0.7초 빠르게 표시
 
     def __init__(self, bot, server_num, voice_client, track_info):
 
@@ -261,6 +264,12 @@ class MusicPlayerView(discord.ui.View):
         self.start_time = time.time()
 
         self.update_task = None
+        
+        # 자막 모니터링 관련 변수들
+        self.last_subtitle_text = None  # 마지막 자막 텍스트 저장
+        self.subtitle_monitor_active = False  # 자막 모니터링 활성화 플래그
+        self.last_api_call_time = 0  # 마지막 API 호출 시간
+        self.subtitle_monitor_task = None  # 자막 모니터링 태스크
 
         self._seeking = False  # 시간 이동 중인지 표시
 
@@ -551,6 +560,37 @@ class MusicPlayerView(discord.ui.View):
             inline=False
 
         )
+        
+        # 자막 표시 (프로그레스 바 아래)
+        subtitle_data = self.track_info.get('subtitle_data')
+        if subtitle_data:
+            # 자막 싱크 조절: Discord 딜레이 보정을 위해 빠르게 표시
+            subtitle_time = max(0, current_time - self.SUBTITLE_SYNC_OFFSET)
+            current_subtitle = subtitle_service.get_current_subtitle(subtitle_data, subtitle_time)
+            if current_subtitle:
+                # 자막 텍스트가 너무 길면 줄임
+                if len(current_subtitle) > 200:
+                    current_subtitle = current_subtitle[:197] + "..."
+                
+                embed.add_field( 
+                    name="",
+                    value=f"```\n{current_subtitle}\n```",
+                    inline=False
+                )
+            else:
+                # 자막이 없으면 빈 텍스트
+                embed.add_field(
+                    name="",
+                    value="```\n\n```",
+                    inline=False
+                )
+        else:
+            # 자막 데이터가 없으면 로딩 메시지
+            embed.add_field(
+                name="",
+                value="```\n자막을 불러오는 중...\n```",
+                inline=False
+            )
 
         
 
@@ -722,6 +762,11 @@ class MusicPlayerView(discord.ui.View):
             self.update_task.cancel()
 
             self.update_task = None
+
+        # 자막 모니터링 태스크도 정리
+        if self.subtitle_monitor_task:
+            self.subtitle_monitor_task.cancel()
+            self.subtitle_monitor_task = None
 
     
 
@@ -1002,6 +1047,9 @@ class MusicPlayerView(discord.ui.View):
                 if self.voice_client and (self.voice_client.is_playing() or self.voice_client.is_paused()):
 
                     update_count += 1
+                    
+                    # 자막 모니터링 활성화 체크 (1초마다만)
+                    await self._check_subtitle_monitoring()
 
                     await self.update_progress()
 
@@ -1035,7 +1083,59 @@ class MusicPlayerView(discord.ui.View):
 
                 pass
 
-    
+    async def _check_subtitle_monitoring(self):
+        """자막 모니터링 필요성 체크 (1초마다)"""
+        subtitle_data = self.track_info.get('subtitle_data')
+        
+        # 자막이 있고 모니터링이 비활성화되어 있으면 활성화
+        if subtitle_data and not self.subtitle_monitor_active:
+            self.subtitle_monitor_active = True
+            self.subtitle_monitor_task = asyncio.create_task(self._subtitle_change_monitor())
+            print(f"[GUI] Subtitle monitoring activated for server {self.server_num}")
+        
+        # 자막이 없고 모니터링이 활성화되어 있으면 비활성화
+        elif not subtitle_data and self.subtitle_monitor_active:
+            self.subtitle_monitor_active = False
+            if self.subtitle_monitor_task:
+                self.subtitle_monitor_task.cancel()
+                self.subtitle_monitor_task = None
+            print(f"[GUI] Subtitle monitoring deactivated for server {self.server_num}")
+
+    async def _subtitle_change_monitor(self):
+        """자막 변경 모니터링 (0.2초 간격으로 최적화)"""
+        while self.subtitle_monitor_active and not self.is_finished():
+            try:
+                await self._check_subtitle_change()
+                await asyncio.sleep(0.1)  # 0.2초 간격으로 체크
+            except Exception as e:
+                print(f"[GUI] Subtitle monitor error: {e}")
+                break
+
+    async def _check_subtitle_change(self):
+        """자막 변경 체크 (API 호출 제한)"""
+        if self.is_updating:
+            return False
+            
+        # 마지막 업데이트로부터 최소 0.n초 경과 확인
+        current_time = time.time()
+        if current_time - self.last_api_call_time < 0.35:
+            return False  # 최소 0.n초 간격 보장
+        
+        subtitle_data = self.track_info.get('subtitle_data')
+        if not subtitle_data:
+            return False
+        
+        subtitle_time = max(0, current_time - self.start_time - self.SUBTITLE_SYNC_OFFSET)
+        current_subtitle = subtitle_service.get_current_subtitle(subtitle_data, subtitle_time)
+        
+        # 자막이 바뀌었으면 즉시 업데이트
+        if current_subtitle != self.last_subtitle_text:
+            self.last_subtitle_text = current_subtitle
+            self.last_api_call_time = current_time
+            await self.update_progress()
+            return True
+        
+        return False
 
     async def on_timeout(self):
 
@@ -1044,6 +1144,11 @@ class MusicPlayerView(discord.ui.View):
         if self.update_task:
 
             self.update_task.cancel()
+
+        # 자막 모니터링 태스크도 정리
+        if self.subtitle_monitor_task:
+            self.subtitle_monitor_task.cancel()
+            self.subtitle_monitor_task = None
 
         await super().on_timeout()
 

@@ -12,6 +12,7 @@ import threading
 import os
 from .Libs import FakeCtx, server_check, leave
 from .GUI import MusicUIManager, MusicPlayerView
+from .subtitle_service import subtitle_service
 
 # ============================================================================
 # Configuration Constants
@@ -398,15 +399,18 @@ class DJ(commands.Cog):
         q_info = track_info['info']
         author = track_info['author']
         
+        # yt-dlp가 추출한 실제 비디오 URL (webpage_url 또는 original_url 사용)
+        actual_video_url = q_info.get('webpage_url') or q_info.get('original_url') or track_info['original_url']
+        
         if len(self.server[server_num].q_list) == 0:
-            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author)
+            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], actual_video_url, author)
             queue_list = self.server[server_num].q_list
         elif insert_num == 0:
-            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author)
+            self.server[server_num].queue_set(q_info['url'], q_info['title'], q_info['duration'], actual_video_url, author)
             queue_list = self.server[server_num].q_list
             q_num = len(queue_list) - 1
         else:
-            self.server[server_num].queue_insert(q_info['url'], q_info['title'], q_info['duration'], track_info['original_url'], author, insert_num)
+            self.server[server_num].queue_insert(q_info['url'], q_info['title'], q_info['duration'], actual_video_url, author, insert_num)
             queue_list = self.server[server_num].q_list
             q_num = insert_num
 
@@ -435,6 +439,11 @@ class DJ(commands.Cog):
         
         # 첫 번째 곡 재생
         track_data = queue_list[0]
+        
+        # 자막 다운로드 (완전히 비동기로 처리, 노래 재생 블로킹 방지)
+        print(f"[Subtitle] Starting subtitle download for: {track_data['title']}")
+        asyncio.create_task(self._download_subtitle_async(track_data, server_num))
+        
         track = self._create_ffmpeg_track(track_data['link'])
         voice_client = self._get_voice_client(ctx, server_num)
         
@@ -463,6 +472,9 @@ class DJ(commands.Cog):
             track_data['duration'], 
             track_data['author']
         )
+        # 자막 데이터 추가
+        if 'subtitle_data' in track_data:
+            track_info['subtitle_data'] = track_data['subtitle_data']
         
         result = await self.ui_manager.get_or_create_ui(
             self.bot, server_num, voice_client, track_info, ctx
@@ -567,6 +579,10 @@ class DJ(commands.Cog):
         """다음 트랙 재생"""
         track_data = queue_list[0]
         
+        # 자막 다운로드 (완전히 비동기로 처리, 노래 재생 블로킹 방지)
+        print(f"[Subtitle] Starting subtitle download for: {track_data['title']}")
+        asyncio.create_task(self._download_subtitle_async(track_data, server_num))
+        
         try:
             track = self._create_ffmpeg_track(track_data['link'])
             voice_client = self._get_voice_client(ctx, server_num)
@@ -593,6 +609,9 @@ class DJ(commands.Cog):
                 track_data['author'],
                 track_data.get('original_url', track_data['url'])
             )
+            # 자막 데이터 추가
+            if 'subtitle_data' in track_data:
+                track_info['subtitle_data'] = track_data['subtitle_data']
 
             await self.ui_manager.bring_ui_to_bottom(self.bot, server_num, ctx)
             await self._update_music_ui(ctx, server_num, voice_client, track_info)
@@ -602,6 +621,34 @@ class DJ(commands.Cog):
                 
         except Exception as e:
             print(f"Error playing next track: {e}")
+
+    async def _download_subtitle_async(self, track_data, server_num=None):
+        """자막 다운로드를 비동기로 처리"""
+        try:
+            subtitle_data = await subtitle_service.get_subtitles_for_video(
+                track_data['url'], 
+                track_data['title']
+            )
+            
+            if subtitle_data:
+                track_data['subtitle_data'] = subtitle_data
+                print(f"[Subtitle] Subtitle ready: {subtitle_data.get('language', 'unknown')}")
+                
+                # 자막이 준비되면 GUI 업데이트 트리거
+                if server_num is not None and hasattr(self, 'ui_manager'):
+                    try:
+                        if server_num in self.ui_manager.server_uis:
+                            music_view = self.ui_manager.server_uis[server_num]
+                            if music_view and hasattr(music_view, 'track_info'):
+                                music_view.track_info['subtitle_data'] = subtitle_data
+                                print(f"[Subtitle] GUI updated with subtitle data for server {server_num}")
+                    except Exception as e:
+                        print(f"[Subtitle] Failed to update GUI: {e}")
+            else:
+                print("[Subtitle] No subtitle available")
+                
+        except Exception as e:
+            print(f"[Subtitle] Subtitle download failed: {e}")
 
     async def _play_dummy_audio(self, voice_client):
         """더미 오디오 재생"""

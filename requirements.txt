@@ -7,3 +7,4 @@ ffmpeg-python>=0.2.0
 requests>=2.28.2
 beautifulsoup4>=4.12.2
 PyNaCl>=1.5.0
+youtube-transcript-api>=0.6.1
