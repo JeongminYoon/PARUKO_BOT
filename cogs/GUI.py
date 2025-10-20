@@ -243,7 +243,7 @@ class MusicUIManager:
 
 class MusicPlayerView(discord.ui.View):
     # 자막 싱크 조절 상수 (초 단위)
-    SUBTITLE_SYNC_OFFSET = -0.5  # Discord 딜레이 보정을 위해 0.7초 빠르게 표시
+    SUBTITLE_SYNC_OFFSET = -0.7
 
     def __init__(self, bot, server_num, voice_client, track_info):
 
@@ -578,19 +578,13 @@ class MusicPlayerView(discord.ui.View):
                     inline=False
                 )
             else:
-                # 자막이 없으면 빈 텍스트
+                # 자막이 없으면 빈 텍스트 (GUI 크기 일정하게 유지)
                 embed.add_field(
-                    name="",
+                    name="", 
                     value="```\n\n```",
                     inline=False
                 )
-        else:
-            # 자막 데이터가 없으면 로딩 메시지
-            embed.add_field(
-                name="",
-                value="```\n자막을 불러오는 중...\n```",
-                inline=False
-            )
+        # 자막 데이터가 없으면 아무것도 표시하지 않음 (필드 추가 안함)  
 
         
 

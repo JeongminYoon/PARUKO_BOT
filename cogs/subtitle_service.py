@@ -114,6 +114,11 @@ class SubtitleService:
                     # fetch() 메서드로 자막 가져오기 (언어 우선순위 지정)
                     fetched_transcript = ytt_api.fetch(video_id, languages=[lang_code])
                     
+                    # 자동생성 자막인지 확인
+                    if fetched_transcript.is_generated:
+                        logger.info(f"[Subtitle] Skipping auto-generated subtitle for language: {lang_code}")
+                        continue  # 자동생성 자막은 건너뛰기
+                    
                     # FetchedTranscript 객체를 dict 형식으로 변환
                     subtitles = [
                         {
@@ -138,6 +143,11 @@ class SubtitleService:
             # 우선순위 언어가 모두 없으면 기본 언어(영어)로 시도
             try:
                 fetched_transcript = ytt_api.fetch(video_id)
+                
+                # 자동생성 자막인지 확인
+                if fetched_transcript.is_generated:
+                    logger.info(f"[Subtitle] Skipping auto-generated fallback subtitle")
+                    return None
                 
                 subtitles = [
                     {

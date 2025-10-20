@@ -20,7 +20,7 @@ def get_bot_token():
 BOT_TOKEN = get_bot_token()
 
 # 기본 상태 메시지 (음악 재생 안할 때)
-idle_messages = ["기숙사에서 쉬는중...", "!help "]
+idle_messages = ["기숙사에서 쉬는중...", "/help 또는 !help"]
 
 
 async def main():

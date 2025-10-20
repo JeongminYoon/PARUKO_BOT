@@ -33,6 +33,12 @@ class MusicBotConfig:
         "https://youtu.be/pNBB8DnoanU?si=3fYVi0NnXEGSYKnd", 
         "https://youtu.be/_LPRluTeSxw?si=Dw1_e9nxeuuJvDG9"
     ]
+
+    HIDDEN_URLS = [
+        "https://www.youtube.com/watch?v=3-kI9rDwQ8E&list=RD3-kI9rDwQ8E&start_radio=1", #odot china
+        "https://www.youtube.com/watch?v=BMvqvnyGtGo&list=RDBMvqvnyGtGo&start_radio=1", #bing chilling
+        "https://www.youtube.com/watch?v=cPNkeRtWicg&list=RDcPNkeRtWicg&start_radio=1" #mambo
+    ]
     
     YOUTUBE_DL_OPTIONS = {
         'format': 'bestaudio/best',
@@ -996,47 +1002,6 @@ class DJ(commands.Cog):
             else:
                 await ctx.reply("❌ GUI를 가져오는 중 오류가 발생했습니다!")
 
-    @commands.command(name="test")
-    async def test_seek(self, ctx, url):
-        """간단한 seek 테스트 명령어"""
-        if not ctx.author.voice:
-            await ctx.send("음성 채널에 먼저 들어가주세요!")
-            return
-        
-        voice_channel = ctx.author.voice.channel
-        voice_client = ctx.voice_client
-        
-        if not voice_client:
-            voice_client = await voice_channel.connect()
-        
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'noplaylist': True,
-            'skip_download': True,
-        }
-        
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            title = info.get('title', 'Unknown')
-            duration = info.get('duration', 0)
-            audio_url = info.get('url')
-        
-        initial_track = self._create_ffmpeg_track(audio_url)
-        voice_client.play(initial_track)
-        
-        await ctx.send(f"🎵 **{title}** 재생 시작! 5초 후 30초 위치로 이동합니다...")
-        
-        await asyncio.sleep(5)
-        
-        seek_track = self._create_ffmpeg_track(audio_url, 30)
-        
-        voice_client.stop()
-        await asyncio.sleep(1)
-        
-        voice_client.play(seek_track, after=lambda e: print(f"Test seek track ended: {e}"))
-        
-        await ctx.send("⏩ **30초 위치로 이동 완료!**")
-
     # ============================================================================
     # Slash Commands
     # ============================================================================
@@ -1104,6 +1069,25 @@ class DJ(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         ctx = FakeCtx(interaction)
         await self.bring_gui(ctx)
+
+    # ============================================================================
+    # Hidden Commands (Prefix Commands Only)
+    # ============================================================================
+    
+    @commands.command(name="china", hidden=True)
+    async def hidden_china(self, ctx):
+        """히든 명령어: China"""
+        await self.play(ctx, MusicBotConfig.HIDDEN_URLS[0], 0)
+    
+    @commands.command(name="bingchilling", hidden=True)
+    async def hidden_chilling(self, ctx):
+        """히든 명령어: Bing Chilling"""
+        await self.play(ctx, MusicBotConfig.HIDDEN_URLS[1], 0)
+    
+    @commands.command(name="mambo", hidden=True)
+    async def hidden_mambo(self, ctx):
+        """히든 명령어: Mambo"""
+        await self.play(ctx, MusicBotConfig.HIDDEN_URLS[2], 0)
 
 async def setup(bot):
     """Cog를 봇에 로드하는 함수"""
