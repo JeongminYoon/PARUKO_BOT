@@ -37,7 +37,8 @@ class MusicBotConfig:
     HIDDEN_URLS = [
         "https://www.youtube.com/watch?v=3-kI9rDwQ8E&list=RD3-kI9rDwQ8E&start_radio=1", #odot china
         "https://www.youtube.com/watch?v=BMvqvnyGtGo&list=RDBMvqvnyGtGo&start_radio=1", #bing chilling
-        "https://www.youtube.com/watch?v=cPNkeRtWicg&list=RDcPNkeRtWicg&start_radio=1" #mambo
+        "https://www.youtube.com/watch?v=cPNkeRtWicg&list=RDcPNkeRtWicg&start_radio=1", #mambo
+        "https://www.youtube.com/watch?v=CoJvLBkiKOQ&list=RDCoJvLBkiKOQ&start_radio=1" #mafty
     ]
     
     YOUTUBE_DL_OPTIONS = {
@@ -1088,6 +1089,11 @@ class DJ(commands.Cog):
     async def hidden_mambo(self, ctx):
         """히든 명령어: Mambo"""
         await self.play(ctx, MusicBotConfig.HIDDEN_URLS[2], 0)
+
+    @commands.command(name="mafty", hidden=True)
+    async def hidden_mafty(self, ctx):
+        """히든 명령어: Mafty"""
+        await self.play(ctx, MusicBotConfig.HIDDEN_URLS[3], 0) 
 
 async def setup(bot):
     """Cog를 봇에 로드하는 함수"""

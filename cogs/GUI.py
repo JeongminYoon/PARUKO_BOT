@@ -1650,7 +1650,7 @@ URL: {self.track_info.get('url', 'Unknown')}
 
     
 
-    @discord.ui.button(label="⬇️ GUI 아래로", style=discord.ButtonStyle.secondary, row=2)
+    @discord.ui.button(label="⬇️ GUI 아래로", style=discord.ButtonStyle.secondary, row=1)
 
     async def move_gui_down(self, interaction, button):
 
