@@ -57,6 +57,9 @@ class MusicBotConfig:
                 'player_client': ['android', 'tv_embedded', 'web'],
                 'skip': ['dash', 'hls'],
                 'lang': ['ko', 'en']
+            },
+            'youtubesearch': {
+                'max_results': 1
             }
         }
     }
@@ -378,8 +381,29 @@ class DJ(commands.Cog):
         url = self._process_quick_url(url)
         
         try:
+            # 단일 비디오만 추출
             q_info = self.DL.extract_info(url, download=False)
-        except Exception:
+            
+            # 디버깅: 검색 결과 확인
+            print(f"DEBUG: q_info 타입 - {type(q_info)}")
+            if q_info:
+                print(f"DEBUG: q_info 키들 - {list(q_info.keys()) if isinstance(q_info, dict) else 'Not a dict'}")
+                print(f"DEBUG: title - {q_info.get('title', 'No title')}")
+                print(f"DEBUG: url - {q_info.get('url', 'No url')}")
+                print(f"DEBUG: webpage_url - {q_info.get('webpage_url', 'No webpage_url')}")
+                
+                # 플레이리스트인 경우 첫 번째 항목만 가져오기
+                if q_info.get('_type') == 'playlist' and q_info.get('entries'):
+                    print(f"DEBUG: 플레이리스트 감지, 첫 번째 항목만 사용")
+                    if q_info['entries']:
+                        q_info = q_info['entries'][0]
+                        print(f"DEBUG: 첫 번째 항목으로 교체 - {q_info.get('title', 'No title')}")
+            else:
+                print("DEBUG: q_info is None")
+                
+        except Exception as e:
+            print(f"ERROR in _extract_track_info: {e}")
+            print(f"URL: {url}")
             if hasattr(ctx, 'interaction') and ctx.interaction is not None:
                 await ctx.send("ERROR: URL invalid", ephemeral=True)
             else:
