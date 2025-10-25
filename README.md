@@ -5,7 +5,7 @@
 <div align="center">
 
 ![Python](https://img.shields.io/badge/Python-3.11.6-blue?style=for-the-badge&logo=python&logoColor=white)
-![Discord.py](https://img.shields.io/badge/Discord.py-2.3.2-7289da?style=for-the-badge&logo=discord&logoColor=white)
+![Discord.py](https://img.shields.io/badge/Discord.py-2.6.4-7289da?style=for-the-badge&logo=discord&logoColor=white)
 ![License](https://img.shields.io/badge/License-MIT-green?style=for-the-badge)
 
 **Discord 음성 채널용 음악 봇**
@@ -33,6 +33,8 @@
 
 - 🎵 **YouTube 음악 재생**: YouTube 링크로 음악 재생
 - 🎶 **재생 목록 관리**: 큐 시스템으로 여러 음악 관리
+- 🎮 **GUI 플레이어**: 인터랙티브한 음악 플레이어 인터페이스
+- 📝 **자막 기능**: YouTube 자막 실시간 표시 (선택적)
 - 🔔 **파루코 호출**: 지정된 음성 채널로 벨소리 전송
 - 📊 **실시간 상태**: 현재 재생 중인 음악 정보 표시
 
@@ -91,15 +93,16 @@ brew install ffmpeg
 
 | 라이브러리 | 버전 | 용도 |
 |-----------|------|------|
-| **discord.py** | 2.3.2 | Discord API 연동 |
+| **discord.py** | 2.6.4 | Discord API 연동 |
 | **aiohttp** | ≥3.8.4 | 비동기 HTTP 클라이언트 |
 | **websockets** | ≥11.0.2 | WebSocket 통신 |
-| **yt-dlp** | ≥2024.1.1 | YouTube 동영상 다운로드 |
+| **yt-dlp** | 2025.10.22 | YouTube 동영상 다운로드 |
 | **mutagen** | ≥1.46.0 | 오디오 메타데이터 처리 |
 | **ffmpeg-python** | ≥0.2.0 | FFmpeg Python 래퍼 |
 | **requests** | ≥2.28.2 | HTTP 요청 처리 |
 | **beautifulsoup4** | ≥4.12.2 | HTML 파싱 |
 | **PyNaCl** | ≥1.5.0 | 암호화 라이브러리 |
+| **youtube-transcript-api** | ≥1.2.3 | YouTube 자막 추출 |
 
 ---
 
@@ -107,33 +110,39 @@ brew install ffmpeg
 
 ### 🎵 음악 재생 명령어
 
-| 명령어 | 별칭 | 설명 |
-|--------|------|------|
-| `!play` | `!p`, `!P`, `!ㅔ` | YouTube 링크 또는 빠른 번호로 음악 재생 |
-| `!skip` | `!s`, `!S`, `!ㄴ` | 다음 곡으로 건너뛰기 |
-| `!pause` | `!ps`, `!Ps`, `!ㅔㄴ` | 재생 일시정지 |
-| `!resume` | `!rs`, `!Rs`, `!ㄱㄴ` | 재생 재개 |
-| `!leave` | `!l`, `!L`, `!ㅣ` | 음성 채널에서 퇴장 |
+| 명령어 | 별칭 | 슬래시 명령어 | 설명 |
+|--------|------|---------------|------|
+| `!play` | `!p`, `!P`, `!ㅔ` | `/play` | YouTube 링크 또는 빠른 번호로 음악 재생 |
+| `!skip` | `!s`, `!S`, `!ㄴ` | `/skip` | 다음 곡으로 건너뛰기 |
+| `!pause` | `!ps`, `!Ps`, `!ㅔㄴ` | `/pause` | 재생 일시정지 |
+| `!resume` | `!rs`, `!Rs`, `!ㄱㄴ` | `/resume` | 재생 재개 |
+| `!leave` | `!l`, `!L`, `!ㅣ` | `/leave` | 음성 채널에서 퇴장 |
 
 ### 📋 재생 목록 관리
 
-| 명령어 | 별칭 | 설명 |
-|--------|------|------|
-| `!queue` | `!q`, `!Q`, `!ㅂ` | 재생 대기열 확인 |
-| `!delete` | `!d`, `!D`, `!ㅇ` | 대기열에서 특정 곡 제거 |
-| `!nowplaying` | `!np`, `!Np`, `!NP`, `!ㅞ` | 현재 재생 중인 곡 정보 |
+| 명령어 | 별칭 | 슬래시 명령어 | 설명 |
+|--------|------|---------------|------|
+| `!queue` | `!q`, `!Q`, `!ㅂ` | `/queue` | 재생 대기열 확인 |
+| `!delete` | `!d`, `!D`, `!ㅇ` | `/delete` | 대기열에서 특정 곡 제거 |
+| `!nowplaying` | `!np`, `!Np`, `!NP`, `!ㅞ` | `/nowplaying` | 현재 재생 중인 곡 정보 |
+
+### 🎮 GUI 플레이어
+
+| 명령어 | 별칭 | 슬래시 명령어 | 설명 |
+|--------|------|---------------|------|
+| `/gui` | `!gui`, `!player`, `!플레이어` | `/gui` | 플레이어 GUI를 채팅 맨 아래로 가져오기 |
 
 ### 🔔 파루코 호출
 
-| 명령어 | 설명 |
-|--------|------|
-| `!ringing` | 지정된 음성 채널로 벨소리 전송 |
+| 명령어 | 슬래시 명령어 | 설명 |
+|--------|---------------|------|
+| `!ringing` | `/ringing` | 지정된 음성 채널로 벨소리 전송 |
 
 ### 📚 도움말
 
-| 명령어 | 설명 |
-|--------|------|
-| `!help` | 전체 명령어 목록 표시 |
+| 명령어 | 슬래시 명령어 | 설명 |
+|--------|---------------|------|
+| `!help` | `/help` | 전체 명령어 목록 표시 |
 
 ---
 
